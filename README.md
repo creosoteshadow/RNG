@@ -2,9 +2,9 @@
 rng – A Modern C++ Random Number Generator Suite
 A lightweight, header-only (with companion .cpp) C++20 library providing three high-quality random number generators:
 
-rng::random_device – A standards-conforming drop-in replacement for std::random_device using the platform’s cryptographically secure entropy source.
-rng::csprng – A fast, cryptographically secure PRNG based on ChaCha20 (original Bernstein layout).
-rng::fast_RNG – An extremely fast non-cryptographic PRNG inspired by wyrand (passes PractRand with no anomalies up to 64 GiB).
+  - rng::random_device – A standards-conforming drop-in replacement for std::random_device using the platform’s cryptographically secure entropy source.
+  - rng::csprng – A fast, cryptographically secure PRNG based on ChaCha20 (original Bernstein layout).
+  - rng::fast_RNG – An extremely fast non-cryptographic PRNG inspired by wyrand (passes PractRand with no anomalies up to 64 GiB).
 
 Also includes convenient utilities for filling buffers with secure random bytes and safe type-punning via rng::Block.
 Features
