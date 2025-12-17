@@ -72,7 +72,7 @@ rng::Block::Block<N> – Safe union for viewing fixed-size byte blocks as u8, u1
 
 # Build & Usage
 
-Bashgit clone https://github.com/yourusername/rng.git
+Bash git clone https://github.com/creosoteshadow/RNG.git
 cd rng
 # Just include the files in your project
 # Example with CMake:
@@ -90,5 +90,5 @@ Serialization operators on csprng are private and intentionally undocumented in 
 
 MIT License – feel free to use in any project, commercial or open-source.
 Author
-[Your Name] – 2025
+creosoteshadow – 2025
 Enjoy fast, secure, and reliable randomness! 🚀
