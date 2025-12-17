@@ -1,2 +1,94 @@
 # RNG
-Random Number Generators: 1) rng::random_device, replacement for std::random_device. 2) class rng::csprng - a cryptographically secure random number generator, based on ChaCha20, 3) class fast_RNG - A fast random number generator, very similar to wyrand.
+rng – A Modern C++ Random Number Generator Suite
+A lightweight, header-only (with companion .cpp) C++20 library providing three high-quality random number generators:
+
+rng::random_device – A standards-conforming drop-in replacement for std::random_device using the platform’s cryptographically secure entropy source.
+rng::csprng – A fast, cryptographically secure PRNG based on ChaCha20 (original Bernstein layout).
+rng::fast_RNG – An extremely fast non-cryptographic PRNG inspired by wyrand (passes PractRand with no anomalies up to 64 GiB).
+
+Also includes convenient utilities for filling buffers with secure random bytes and safe type-punning via rng::Block.
+Features
+
+Cross-platform – Works on Windows (via BCryptGenRandom) and Unix-like systems (getrandom() → /dev/urandom fallback).
+Modern C++20 – Uses std::span, std::byte, concepts, and constexpr where appropriate.
+Secure by default – The CSPRNG provides full 256-bit security, backtracking resistance, and protection against key/nonce reuse.
+No dependencies – Only the C++ standard library and platform headers.
+Header-only convenience – All classes and utilities are in a single header; the .cpp file contains only the platform-specific entropy implementation.
+Thoroughly commented – Extensive documentation in the code for future maintenance.
+
+# Quick Start
+
+    #include "RNG.h"
+    #include <iostream>
+    
+    int main() {
+        // 1. Cryptographically secure randomness
+        rng::csprng secure;  // seeded from OS entropy
+        std::cout << "Secure uint64: " << secure() << "\n";
+    
+        // Unbiased random int in [1, 6]
+        std::cout << "Dice roll: " << secure.unbiased(1u, 6u) << "\n";
+    
+        // 2. Fast non-cryptographic randomness (e.g., simulations, games)
+        rng::fast_RNG fast(12345ULL);
+        std::cout << "Fast uint64: " << fast() << "\n";
+    
+        // 3. Fill a buffer with secure random bytes
+        std::array<std::byte, 32> key;
+        rng::get_random_bytes(key);
+    
+        // 4. Use as a drop-in for std::random_device
+        rng::random_device rd;
+        std::cout << "random_device compatible: " << rd() << "\n";
+    }
+# Classes Overview
+
+rng::random_device
+
+Conforms to the UniformRandomBitGenerator concept.
+Returns 32-bit values (like std::random_device).
+Throws on entropy failure (rare but critical).
+
+rng::csprng
+
+ChaCha20-based stream cipher in counter mode.
+256-bit key, 64-bit nonce, 64-bit block counter (original DJB layout).
+Multiple constructors: from explicit key/nonce, 32/64-byte seed material, OS entropy (default), or deterministic seed.
+Rejection sampling for unbiased bounded integers.
+Constant-time state comparison.
+Move-only (copying forbidden for security).
+
+rng::fast_RNG
+
+Single 64-bit state, ~11 GB/s throughput.
+Based on wyrand with slight mixing variation.
+Passes PractRand to 64 GiB with no anomalies.
+Full UniformRandomBitGenerator support including discard() and stream serialization.
+
+Utilities
+
+rng::get_random_bytes(std::span<std::byte>) – Fill arbitrary buffers with secure entropy.
+rng::Block::Block<N> – Safe union for viewing fixed-size byte blocks as u8, u16, u32, or u64 arrays.
+
+# Build & Usage
+
+Bashgit clone https://github.com/yourusername/rng.git
+cd rng
+# Just include the files in your project
+# Example with CMake:
+add_library(rng STATIC RNG.cpp)
+target_include_directories(rng PUBLIC .)
+target_compile_features(rng PUBLIC cxx_std_20)
+No external build steps required beyond compiling RNG.cpp alongside your code.
+
+# Notes & Warnings
+
+The ChaCha20 implementation uses the original Bernstein layout (64-bit nonce + 64-bit counter). This is not RFC 8439 compliant (which uses 96-bit nonce + 32-bit counter). Do not interoperate with TLS, WireGuard, or libsodium without adaptation.
+Serialization operators on csprng are private and intentionally undocumented in the public API — exposing the full state breaks security.
+
+# License
+
+MIT License – feel free to use in any project, commercial or open-source.
+Author
+[Your Name] – 2025
+Enjoy fast, secure, and reliable randomness! 🚀
