@@ -38,7 +38,50 @@ Contents:
 #include <string>
 #include <stdexcept>
 #include <type_traits> // Required for std::is_trivially_copyable_v
+#include <utility>      // for std::swap
 #include <vector>
+
+
+
+// Portable 128-bit multiplication helpers
+// Define once per translation unit
+#ifdef __SIZEOF_INT128__
+// GCC/Clang with native __int128 support
+using uint128_t = __int128_t;
+
+static inline constexpr uint128_t mul128(std::uint64_t a, std::uint64_t b) {
+    return static_cast<uint128_t>(a) * static_cast<uint128_t>(b);
+}
+
+static inline constexpr std::uint64_t lo128(uint128_t x) {
+    return static_cast<std::uint64_t>(x);
+}
+
+static inline constexpr std::uint64_t hi128(uint128_t x) {
+    return static_cast<std::uint64_t>(x >> 64);
+}
+
+#elif defined(_MSC_VER)
+// MSVC: use intrinsic
+#include <intrin.h>     // MSVC intrinsic, only included when needed
+struct uint128_t {
+    std::uint64_t lo;
+    std::uint64_t hi;
+    constexpr uint128_t(std::uint64_t l = 0, std::uint64_t h = 0) : lo(l), hi(h) {}
+};
+
+static inline uint128_t mul128(std::uint64_t a, std::uint64_t b) {
+    std::uint64_t hi;
+    std::uint64_t lo = _umul128(a, b, &hi);
+    return { lo, hi };
+}
+
+static inline constexpr std::uint64_t lo128(uint128_t x) { return x.lo; }
+static inline constexpr std::uint64_t hi128(uint128_t x) { return x.hi; }
+
+#else
+#error "Compiler/platform does not support 128-bit multiplication required for unbiased()"
+#endif
 
 // This should never happen, but for defensive purposes:
 static_assert(sizeof(std::byte) == 1, "std::byte must be 8 bits");
@@ -55,6 +98,7 @@ namespace rng {
     using u64 = std::uint64_t;
 
     namespace detail {
+        // This is defined in RNG.cpp
         inline void fill_with_platform_entropy(unsigned char* buffer, std::size_t size);
     }
 
@@ -89,6 +133,62 @@ namespace rng {
         double entropy() const noexcept {
             return 32.0;
         }
+
+        //
+        // Extras
+        //
+
+        inline uint32_t draw32() { return (*this)(); }
+        inline uint64_t draw64() { return (uint64_t((*this)()) << 32) | uint64_t((*this)()); }
+
+        // Draw an unbiased integer in an interval [lo,hi], including the endpoints
+        // Uses Lemire's method.
+        inline std::uint64_t unbiased(std::uint64_t lo, std::uint64_t hi)
+        {
+            if (lo > hi) std::swap(lo, hi);
+            if (lo == hi) return lo;
+
+            // Full 64-bit range: return raw 64-bit entropy directly
+            if (hi - lo == UINT64_MAX) return draw64();
+
+            const std::uint64_t range = hi - lo + 1;
+
+            std::uint64_t x = draw64();
+            std::uint64_t l = lo128(mul128(x, range));
+
+            if (l < range) [[unlikely]] {
+                const std::uint64_t t = static_cast<std::uint64_t>(-range) % range;
+                while (l < t) {
+                    x = draw64();
+                    l = lo128(mul128(x, range));
+                }
+            }
+
+            return lo + hi128(mul128(x, range));
+        }
+        inline void fill(std::span<std::byte>data) {
+            std::byte* ptr = data.data();
+            size_t size = data.size();
+            while (size >= 8) {
+                uint64_t z = draw64();
+                memcpy(ptr, &z, 8);
+                ptr += 8;
+                size -= 8;
+            }
+            if (size > 0) {
+                uint64_t z = draw64();
+                memcpy(ptr, &z, size);
+            }
+        }
+        template <class T, size_t N> inline void fill(std::array<T, N>& arr)
+        {
+            fill(std::as_bytes(std::span(arr)));
+        }
+        template <class T> inline void fill(std::vector<T>& arr)
+        {
+            fill(std::as_bytes(std::span(arr)));
+        }
+        bool operator==(const random_device&) const noexcept { return true; } // all same source
     };
 
     // Fill a buffer with platform entropy
@@ -472,6 +572,9 @@ namespace rng {
         using result_type = uint64_t;
 
         static constexpr std::size_t state_size = 16;  // 512 bits total state (key+nonce+block_counter+buffer)
+        static constexpr std::size_t block_size = 64;
+        static constexpr std::size_t words_per_block = 8;
+
         static constexpr bool has_fixed_range = true;
         static constexpr result_type default_seed = 0x0123456789ABCDEFULL;
 
@@ -582,7 +685,6 @@ namespace rng {
             refill_buffer();
         }
 
-
         /// Copy construction is disabled — would duplicate the output stream (catastrophic for security)
         csprng(const csprng&) = delete;
         csprng& operator=(const csprng&) = delete;
@@ -591,8 +693,12 @@ namespace rng {
         csprng(csprng&&) noexcept = default;
         csprng& operator=(csprng&&) noexcept = default;
 
-        // Use the default destructor
-        ~csprng() noexcept = default; // nothing to clear, RAII handles it
+        // destructor
+        ~csprng() noexcept {
+            clear(&key, sizeof(key));
+            clear(&nonce, sizeof(nonce));
+            clear(&buffer, sizeof(buffer));
+        }
 
         /// @brief Generates the next 64-bit value in the keystream
         /// @return A cryptographically secure 64-bit unsigned integer
@@ -603,40 +709,70 @@ namespace rng {
             return buffer.u64[word_index++];
         }
 
-        /// @brief Generates an unbiased uniform integer in the closed interval [lo, hi]
-        /// @param lo  Lower bound (inclusive)
-        /// @param hi  Upper bound (inclusive)
-        /// @return    Uniform value in [lo, hi] with no modulo bias
-        ///
-        /// Uses rejection sampling to eliminate bias when the range does not divide 2⁶⁴.
-        /// If lo > hi the arguments are swapped.
-        result_type unbiased(std::uint64_t lo, std::uint64_t hi)
-        {
-            if (lo > hi) std::swap(lo, hi); // assume user transposed arguments
-            if (lo == hi) return lo; // zero range
-
-            // Special case: full 64-bit inclusive range [0, UINT64_MAX]
-            // hi - lo == UINT64_MAX avoids overflow in 'range = hi - lo + 1'
-            if (hi - lo == max())
-                return (*this)();
-
-            const std::uint64_t range = hi - lo + 1ULL;
-            const std::uint64_t limit = max() - (max() % range);  // first value outside [0, range-1]
-
-            std::uint64_t value;
-            do {
-                value = (*this)();
-            } while (value > limit);
-
-            return lo + (value % range);
+        inline uint32_t draw32() {
+            return (uint32_t)((*this)() >> 32);
         }
+        inline uint64_t draw64() {
+            return (*this)();
+        }
+
+        // Draw an unbiased integer in an interval [lo,hi], including the endpoints
+        // Uses Lemire's method.
+        inline std::uint64_t unbiased(std::uint64_t lo, std::uint64_t hi)
+        {
+            if (lo > hi) std::swap(lo, hi);
+            if (lo == hi) return lo;
+
+            // Full 64-bit range: return raw 64-bit entropy directly
+            if (hi - lo == UINT64_MAX) return draw64();
+
+            const std::uint64_t range = hi - lo + 1;
+
+            std::uint64_t x = draw64();
+            std::uint64_t l = lo128(mul128(x, range));
+
+            if (l < range) [[unlikely]] {
+                const std::uint64_t t = static_cast<std::uint64_t>(-range) % range;
+                while (l < t) {
+                    x = draw64();
+                    l = lo128(mul128(x, range));
+                }
+            }
+
+            return lo + hi128(mul128(x, range));
+        }
+        inline void fill(std::span<std::byte>data) {
+            std::byte* ptr = data.data();
+            size_t size = data.size();
+            while (size >= 8) {
+                uint64_t z = draw64();
+                memcpy(ptr, &z, 8);
+                ptr += 8;
+                size -= 8;
+            }
+            if (size > 0) {
+                uint64_t z = draw64();
+                memcpy(ptr, &z, size);
+            }
+        }
+        template <class T, size_t N> inline void fill(std::array<T, N>& arr)
+        {
+            fill(std::as_bytes(std::span(arr)));
+        }
+        template <class T> inline void fill(std::vector<T>& arr)
+        {
+            fill(std::as_bytes(std::span(arr)));
+        }
+
+        // NO! WRONG!
+        // bool operator==(const random_device&) const noexcept { return true; }
 
         /// @brief Reseeds the generator with a new key/nonce pair
         /// @param k  New 256-bit key
         /// @param n  New 64-bit nonce
         ///
         /// Useful after fork() in multi-process environments or for periodic reseeding.
-        void reseed(const ChaCha::KEY& k, const std::array<u32, 2>& n) {
+        void reseed(const ChaCha::KEY& k, const ChaCha::NONCE& n) {
             key = k;
             nonce = n;
             block_counter = 0;
@@ -671,7 +807,7 @@ namespace rng {
             // Skip full blocks by advancing block_counter
             if (full_blocks > 0) {
                 if (block_counter > UINT64_MAX - full_blocks)
-                    throw std::runtime_error("SecureRNG: block_counter overflow during discard");
+                    throw std::runtime_error("csprng: block_counter overflow during discard");
                 block_counter += full_blocks;
             }
 
@@ -683,7 +819,27 @@ namespace rng {
             // else: word_index remains 8 → next operator() will refill automatically
         }
 
-        /// @brief Compares two SecureRNG objects for equality of internal state
+        /// @brief Advances the stream by exactly 2^32 outputs (2^35 bytes).
+        /// Equivalent to calling operator() 2^32 times.
+        ///
+        /// Use to generate up to 2^32 non-overlapping subsequences for parallel computations
+        /// (each subsequence has length 2^32).
+        /// Preserves full 64-bit nonce security.
+        void jump() {
+            discard(1ULL << 32);
+        }
+
+        /// @brief Advances the stream by exactly 2^48 outputs (2^51 bytes).
+        /// Equivalent to calling operator() 2^48 times.
+        ///
+        /// Use to generate up to 2^16 non-overlapping subsequences for parallel computations
+        /// (each subsequence has length 2^48).
+        /// Preserves full 64-bit nonce security.
+        void long_jump() {
+            discard(1ULL << 48);
+        }
+
+        /// @brief Compares two csprng objects for equality of internal state
         /// @return true if and only if both generators produce identical future output
         ///
         /// The 256-bit key is compared in constant time to prevent timing attacks.
@@ -738,7 +894,7 @@ namespace rng {
         /// @return    Reference to the output stream
         ///
         /// The format is binary and versioned:
-        /// - 8 bytes:  magic header "SecureRNG"
+        /// - 8 bytes:  magic header "csprng"
         /// - 1 byte:   version (currently 1)
         /// - 32 bytes: key
         /// - 8 bytes:  nonce
@@ -751,7 +907,7 @@ namespace rng {
         friend std::basic_ostream<CharT, Traits>&
             operator<<(std::basic_ostream<CharT, Traits>& os, const csprng& rng)
         {
-            static constexpr char magic[8] = "SecureRNG";
+            static constexpr char magic[8] = "csprng";
             static constexpr std::uint8_t version = 1;
 
             os.write(magic, 8);
@@ -781,12 +937,12 @@ namespace rng {
         {
             char magic[8] = {};
             is.read(magic, 8);
-            if (!is || std::memcmp(magic, "SecureRNG", 8) != 0)
-                throw std::runtime_error("SecureRNG: invalid or corrupted stream (bad magic)");
+            if (!is || std::memcmp(magic, "csprng", 8) != 0)
+                throw std::runtime_error("csprng: invalid or corrupted stream (bad magic)");
 
             const std::uint8_t version = static_cast<std::uint8_t>(is.get());
             if (!is || version != 1)
-                throw std::runtime_error("SecureRNG: unsupported version");
+                throw std::runtime_error("csprng: unsupported version");
 
             is.read(reinterpret_cast<char*>(rng.key.data()), 32);
             is.read(reinterpret_cast<char*>(rng.nonce.data()), 8);
@@ -794,7 +950,7 @@ namespace rng {
 
             const int idx = is.get();
             if (!is || idx < 0 || idx > 8)
-                throw std::runtime_error("SecureRNG: corrupted word_index");
+                throw std::runtime_error("csprng: corrupted word_index");
 
             rng.word_index = static_cast<size_t>(idx);
 
@@ -803,14 +959,14 @@ namespace rng {
             is.read(padding, 7);
 
             if (!is)
-                throw std::runtime_error("SecureRNG: stream read error during deserialization");
+                throw std::runtime_error("csprng: stream read error during deserialization");
 
             // If the buffer was valid, we must regenerate it
             if (rng.word_index < 8) {
                 // Reconstruct the current block from key/nonce/block_counter-1
                 const uint64_t saved_counter = rng.block_counter;
                 if (saved_counter == 0) {
-                    throw std::runtime_error("SecureRNG: cannot restore mid-block state at block_counter == 0");
+                    throw std::runtime_error("csprng: cannot restore mid-block state at block_counter == 0");
                 }
                 --rng.block_counter;
                 rng.refill_buffer();           // generates the correct block
@@ -842,7 +998,7 @@ namespace rng {
                 // 2⁷⁰ bytes generated (~1.2 zettabytes). 
                 // If this ever triggers, humanity has bigger problems.
                 // Required for RFC 8439 compliance and formal audits.
-                throw std::runtime_error("SecureRNG: key/nonce pair exhausted");
+                throw std::runtime_error("csprng: key/nonce pair exhausted");
             }
         }
 
@@ -851,7 +1007,7 @@ namespace rng {
             for (size_t i = 0; i < nbytes; i++)
                 p[i] = 0;
         }
-    }; // class SecureRNG
+    }; // class csprng
 
     // fast_RNG: A fast non-cryptographic PRNG inspired by wyrand.
     // Core idea (additive increment + wide multiplication + hi ⊕ lo output) comes from:
@@ -959,21 +1115,8 @@ namespace rng {
         // Core generator
         result_type operator()() {
             state += INCREMENT;
-
-#if defined(_MSC_VER) && defined(_M_X64)
-            // MSVC intrinsic
-            uint64_t hi;
-            uint64_t lo = _umul128(state, state ^ MIX, &hi);
-            return state ^ MIX ^ lo ^ hi;
-#elif defined(__GNUC__) || defined(__clang__)
-            // GCC and Clang (including clang-cl)
-            __uint128_t product = static_cast<__uint128_t>(state) * (state ^ MIX);
-            uint64_t lo = static_cast<uint64_t>(product);
-            uint64_t hi = static_cast<uint64_t>(product >> 64);
-            return state ^ MIX ^ lo ^ hi;
-#else
-#error "Unsupported compiler/platform for 128-bit multiplication"
-#endif
+            uint128_t product = mul128(state, state ^ MIX);
+            return state ^ MIX ^ lo128(product) ^ hi128(product);
         }
 
         // Discard (jump ahead) - standard requirement
@@ -1006,8 +1149,122 @@ namespace rng {
             is >> rng.state;
             return is;
         }
+
+        // extras
+
+        inline uint32_t draw32() {
+            return static_cast<uint32_t>((*this)() >> 32);
+        }
+
+        inline uint64_t draw64() {
+            return (*this)();
+        }
+
+        // Lemire's unbiased bounded integer — identical to the others
+        inline uint64_t unbiased(uint64_t lo, uint64_t hi) {
+            if (lo > hi) std::swap(lo, hi);
+            if (lo == hi) return lo;
+
+            if (hi - lo == UINT64_MAX) return draw64();
+
+            const uint64_t range = hi - lo + 1;
+
+            uint64_t x = draw64();
+            uint64_t l = lo128(mul128(x, range));
+
+            if (l < range) [[unlikely]] {
+                const uint64_t t = static_cast<uint64_t>(-range) % range;
+                while (l < t) {
+                    x = draw64();
+                    l = lo128(mul128(x, range));
+                }
+            }
+
+            return lo + hi128(mul128(x, range));
+        }
+
+        // fill() overloads — identical to the others
+        inline void fill(std::span<std::byte> data) {
+            std::byte* ptr = data.data();
+            size_t size = data.size();
+
+            while (size >= 8) {
+                uint64_t z = draw64();
+                std::memcpy(ptr, &z, 8);
+                ptr += 8;
+                size -= 8;
+            }
+
+            if (size > 0) {
+                uint64_t z = draw64();
+                std::memcpy(ptr, &z, size);
+            }
+        }
+
+        template <class T, size_t N>
+        inline void fill(std::array<T, N>& arr) {
+            fill(std::as_bytes(std::span(arr)));
+        }
+
+        template <class T>
+        inline void fill(std::vector<T>& arr) {
+            fill(std::as_bytes(std::span(arr)));
+        }
+
+        // jump() and long_jump() — consistent with csprng
+        void jump() {
+            discard(1ULL << 32);
+        }
+
+        void long_jump() {
+            discard(1ULL << 48);
+        }
     };
 
+
+
+    //==============================================================================================
+    // Generic fill functions — work with any UniformRandomBitGenerator
+    //==============================================================================================
+
+    template <class Gen>
+    concept HasFillMember = requires(Gen & g, std::span<std::byte> s) {
+        g.fill(s);
+    };
+
+    template <class Gen>
+    inline void fill(std::span<std::byte> data, Gen& gen) {
+        if constexpr (HasFillMember<Gen>) {
+            gen.fill(data);
+        }
+        else {
+            std::byte* ptr = data.data();
+            size_t size = data.size();
+
+            using result_type = typename Gen::result_type;
+
+            while (size >= sizeof(result_type)) {
+                result_type value = gen();
+                std::memcpy(ptr, &value, sizeof(result_type));
+                ptr += sizeof(result_type);
+                size -= sizeof(result_type);
+            }
+
+            if (size > 0) {
+                result_type value = gen();
+                std::memcpy(ptr, &value, size);
+            }
+        }
+    }
+
+    template <class T, size_t N, class Gen>
+    inline void fill(std::array<T, N>& arr, Gen& gen) {
+        fill(std::as_bytes(std::span(arr)), gen);
+    }
+
+    template <class T, class Gen>
+    inline void fill(std::vector<T>& vec, Gen& gen) {
+        fill(std::as_bytes(std::span(vec)), gen);
+    }
+
 }// namespace rng
-
-
