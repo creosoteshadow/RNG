@@ -92,8 +92,9 @@ See `RNG_test.h` for the tester and `RNG_test_results*` files for raw/reproduced
     Bash git clone https://github.com/creosoteshadow/RNG.git  
     cd rng
 
-# Just include the files in your project
-# Example with CMake:
+Just include the files in your project.
+
+Example with CMake:  
     add_library(rng STATIC RNG.cpp)  
     target_include_directories(rng PUBLIC .)  
     target_compile_features(rng PUBLIC cxx_std_20)  
