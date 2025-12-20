@@ -89,23 +89,51 @@ See `RNG_test.h` for the tester and `RNG_test_results*` files for raw/reproduced
 
 # Build & Usage
 
-Bash git clone https://github.com/creosoteshadow/RNG.git
-cd rng
+    Bash git clone https://github.com/creosoteshadow/RNG.git  
+    cd rng
+
 # Just include the files in your project
 # Example with CMake:
-add_library(rng STATIC RNG.cpp)
-target_include_directories(rng PUBLIC .)
-target_compile_features(rng PUBLIC cxx_std_20)
-No external build steps required beyond compiling RNG.cpp alongside your code.
+    add_library(rng STATIC RNG.cpp)  
+    target_include_directories(rng PUBLIC .)  
+    target_compile_features(rng PUBLIC cxx_std_20)  
+    No external build steps required beyond compiling RNG.cpp alongside your code.  
 
 # Notes & Warnings
 
-The ChaCha20 implementation uses the original Bernstein layout (64-bit nonce + 64-bit counter). This is not RFC 8439 compliant (which uses 96-bit nonce + 32-bit counter). Do not interoperate with TLS, WireGuard, or libsodium without adaptation.
-Serialization operators on csprng are private and intentionally undocumented in the public API — exposing the full state breaks security.
+- The ChaCha20 implementation uses the original Bernstein layout (64-bit nonce + 64-bit counter). This is not RFC 8439 compliant (which uses 96-bit nonce + 32-bit counter). Do not interoperate with TLS, WireGuard, or libsodium without adaptation.
+- Serialization operators on csprng are private and intentionally undocumented in the public API — exposing the full state breaks security.
+
+# References
+Here are some high-quality external resources for background on the key algorithms and tools used in this library. These provide deeper reading on design, security, and testing.
+
+- wyrand / wyhash (basis for rng::fast_RNG)  
+    Official repository by Wang Yi: https://github.com/wangyi-fudan/wyhash  
+    (Includes wyrand implementation, discussions on statistical quality, and PractRand results.)  
+
+- ChaCha20 (basis for rng::csprng)  
+    Original paper by Daniel J. Bernstein: "ChaCha, a variant of Salsa20" (2008)  
+    https://cr.yp.to/chacha/chacha-20080128.pdf  
+    Note: This library uses Bernstein's original layout (64-bit nonce + 64-bit counter). For the IETF-standard variant (96-bit nonce + 32-bit counter, used in TLS/WireGuard): RFC 8439 - ChaCha20 and Poly1305 for IETF Protocols https://datatracker.ietf.org/doc/html/rfc8439
+
+- PractRand (statistical test suite used for validation)  
+    PractRand homepage and source (original by Chris Doty-Humphrey): http://pracrand.sourceforge.net/  
+    (Recommended for rigorous RNG testing; our results were generated with this suite.)
+
+- Lemire's unbiased bounded integer method (used in unbiased() across all generators)  
+    "Fast Random Integer Generation in an Interval" by Daniel Lemire (2018)  
+    https://arxiv.org/abs/1805.10941  
+    (Describes the nearly-divisionless rejection sampling technique for uniform ranges without bias.)
+
+- Platform entropy sources
+    Windows: BCryptGenRandom (Microsoft Docs)  
+    https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptgenrandomLinux/Unix: getrandom(2) man page  
+    https://man7.org/linux/man-pages/man2/getrandom.2.html
 
 # License
 
-MIT License – feel free to use in any project, commercial or open-source.
-Author
-creosoteshadow – 2025
+  MIT License – feel free to use in any project, commercial or open-source.  
+  Author  
+  creosoteshadow – 2025
+
 Enjoy fast, secure, and reliable randomness! 🚀
