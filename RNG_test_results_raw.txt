@@ -1,0 +1,115 @@
+Testing rng::random_device
+Elapsed time (s) = 1.86083
+GBPS = 0.0582526
+Size: 2 GB
+Words: 268435456
+Wrote 1 GB
+Wrote 2 GB
+Executing PractRand command: type test.bin | RNG_test.exe stdin64 -tf 2 -te 1 -tlmax 2GB -multithreaded
+RNG_test using PractRand version 0.94
+RNG = RNG_stdin64, seed = unknown
+test set = expanded, folding = extra
+
+rng=RNG_stdin64, seed=unknown
+length= 64 megabytes (2^26 bytes), time= 2.7 seconds
+  no anomalies in 1008 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 128 megabytes (2^27 bytes), time= 7.4 seconds
+  no anomalies in 1081 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 256 megabytes (2^28 bytes), time= 14.3 seconds
+  no anomalies in 1151 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 512 megabytes (2^29 bytes), time= 24.9 seconds
+  no anomalies in 1220 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 1 gigabyte (2^30 bytes), time= 44.2 seconds
+  no anomalies in 1293 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 2 gigabytes (2^31 bytes), time= 79.2 seconds
+  no anomalies in 1368 test result(s)
+
+PractRand command completed successfully
+
+
+Testing rng::csprng
+Elapsed time (s) = 0.206518
+GBPS = 0.524887
+Size: 2 GB
+Words: 268435456
+Wrote 1 GB
+Wrote 2 GB
+Executing PractRand command: type test.bin | RNG_test.exe stdin64 -tf 2 -te 1 -tlmax 2GB -multithreaded
+RNG_test using PractRand version 0.94
+RNG = RNG_stdin64, seed = unknown
+test set = expanded, folding = extra
+
+rng=RNG_stdin64, seed=unknown
+length= 64 megabytes (2^26 bytes), time= 2.6 seconds
+  no anomalies in 1008 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 128 megabytes (2^27 bytes), time= 7.3 seconds
+  no anomalies in 1081 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 256 megabytes (2^28 bytes), time= 14.2 seconds
+  no anomalies in 1151 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 512 megabytes (2^29 bytes), time= 25.2 seconds
+  no anomalies in 1220 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 1 gigabyte (2^30 bytes), time= 45.5 seconds
+  no anomalies in 1295 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 2 gigabytes (2^31 bytes), time= 83.7 seconds
+  no anomalies in 1368 test result(s)
+
+PractRand command completed successfully
+
+
+Testing rng::fast_RNG
+Elapsed time (s) = 0.0911708
+GBPS = 10.7114
+Size: 2 GB
+Words: 268435456
+Wrote 1 GB
+Wrote 2 GB
+Executing PractRand command: type test.bin | RNG_test.exe stdin64 -tf 2 -te 1 -tlmax 2GB -multithreaded
+RNG_test using PractRand version 0.94
+RNG = RNG_stdin64, seed = unknown
+test set = expanded, folding = extra
+
+rng=RNG_stdin64, seed=unknown
+length= 64 megabytes (2^26 bytes), time= 2.6 seconds
+  no anomalies in 1008 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 128 megabytes (2^27 bytes), time= 7.3 seconds
+  no anomalies in 1081 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 256 megabytes (2^28 bytes), time= 14.2 seconds
+  no anomalies in 1151 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 512 megabytes (2^29 bytes), time= 25.0 seconds
+  no anomalies in 1220 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 1 gigabyte (2^30 bytes), time= 44.6 seconds
+  no anomalies in 1295 test result(s)
+
+rng=RNG_stdin64, seed=unknown
+length= 2 gigabytes (2^31 bytes), time= 80.6 seconds
+  no anomalies in 1368 test result(s)
+
+PractRand command completed successfully
