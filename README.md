@@ -1,4 +1,9 @@
 # RNG
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![C++20](https://img.shields.io/badge/C++-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
+[![Header-only](https://img.shields.io/badge/Style-Header%20Only-brightgreen)](https://en.wikipedia.org/wiki/Header-only)
+[![PractRand Clean](https://img.shields.io/badge/PractRand-64%20GiB%20Clean-success)](https://github.com/creosoteshadow/RNG/blob/main/RNG_test_results_raw.txt)
+
 rng – A Modern C++ Random Number Generator Suite
 A lightweight, header-only (with companion .cpp) C++20 library providing three high-quality random number generators:
 
@@ -67,8 +72,8 @@ Full UniformRandomBitGenerator support including discard() and stream serializat
 
 Utilities
 
-rng::get_random_bytes(std::span<std::byte>) – Fill arbitrary buffers with secure entropy.
-rng::Block::Block<N> – Safe union for viewing fixed-size byte blocks as u8, u16, u32, or u64 arrays.
+rng::helper::get_random_bytes(std::span<std::byte> – Fill arbitrary buffers with secure entropy.
+rng::helper::Block<N> – Safe union for viewing fixed-size byte blocks as u8, u16, u32, or u64 arrays.
 
 ### Benchmarks and Statistical Testing
 
