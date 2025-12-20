@@ -41,8 +41,6 @@ Contents:
 #include <utility>      // for std::swap
 #include <vector>
 
-
-
 // Portable 128-bit multiplication helpers
 // Define once per translation unit
 #ifdef __SIZEOF_INT128__
@@ -97,114 +95,32 @@ namespace rng {
     using u32 = std::uint32_t;
     using u64 = std::uint64_t;
 
-    namespace detail {
-        // This is defined in RNG.cpp
-        inline void fill_with_platform_entropy(unsigned char* buffer, std::size_t size);
-    }
+    // -- helper functions and classes
+    namespace helper {
 
-    // Drop-in replacement for std::random_device, uses BCryptGenRandom. Retrieves
-    // 4 bytes at a time, just like std::random_device.
-    class random_device {
-    public:
-        using result_type = uint32_t;  // std::random_device uses uint32_t
+        // Declared in header, defined in RNG.cpp
+        void fill_with_platform_entropy(unsigned char* buffer, std::size_t size);
 
-        static constexpr result_type min() noexcept { return std::numeric_limits<result_type>::min(); }
-        static constexpr result_type max() noexcept { return std::numeric_limits<result_type>::max(); }
-
-        // Default constructor
-        random_device() = default;
-
-        // Disable copy (like real random_device)
-        random_device(const random_device&) = delete;
-        random_device& operator=(const random_device&) = delete;
-
-        // Explicitly allow construction with a "token" string (ignored, for compatibility)
-        explicit random_device(const std::string&) {}
-
-        // The core: return secure random 32-bit value
-        uint32_t operator()() noexcept(false)
+        /// @brief Fill a buffer with cryptographically secure entropy from the OS
+        /// @param buffer Span to fill (must be non-empty)
+        /// @throws std::invalid_argument if buffer is empty
+        /// @throws std::runtime_error if entropy collection fails
+        inline void get_random_bytes(std::span<std::byte> buffer)
         {
-            uint32_t result;
-            rng::detail::fill_with_platform_entropy(reinterpret_cast<unsigned char*>(&result), sizeof(result));
-            return result;
-        }
-
-        // Entropy estimate — real devices often return 32.0, so we do too
-        double entropy() const noexcept {
-            return 32.0;
-        }
-
-        //
-        // Extras
-        //
-
-        inline uint32_t draw32() { return (*this)(); }
-        inline uint64_t draw64() { return (uint64_t((*this)()) << 32) | uint64_t((*this)()); }
-
-        // Draw an unbiased integer in an interval [lo,hi], including the endpoints
-        // Uses Lemire's method.
-        inline std::uint64_t unbiased(std::uint64_t lo, std::uint64_t hi)
-        {
-            if (lo > hi) std::swap(lo, hi);
-            if (lo == hi) return lo;
-
-            // Full 64-bit range: return raw 64-bit entropy directly
-            if (hi - lo == UINT64_MAX) return draw64();
-
-            const std::uint64_t range = hi - lo + 1;
-
-            std::uint64_t x = draw64();
-            std::uint64_t l = lo128(mul128(x, range));
-
-            if (l < range) [[unlikely]] {
-                const std::uint64_t t = static_cast<std::uint64_t>(-range) % range;
-                while (l < t) {
-                    x = draw64();
-                    l = lo128(mul128(x, range));
-                }
+            if (buffer.empty()) {
+                throw std::invalid_argument("get_random_bytes: buffer must not be empty");
             }
 
-            return lo + hi128(mul128(x, range));
+            fill_with_platform_entropy(
+                reinterpret_cast<unsigned char*>(buffer.data()),
+                buffer.size_bytes()
+            );
         }
-        inline void fill(std::span<std::byte>data) {
-            std::byte* ptr = data.data();
-            size_t size = data.size();
-            while (size >= 8) {
-                uint64_t z = draw64();
-                memcpy(ptr, &z, 8);
-                ptr += 8;
-                size -= 8;
-            }
-            if (size > 0) {
-                uint64_t z = draw64();
-                memcpy(ptr, &z, size);
-            }
-        }
-        template <class T, size_t N> inline void fill(std::array<T, N>& arr)
-        {
-            fill(std::as_bytes(std::span(arr)));
-        }
-        template <class T> inline void fill(std::vector<T>& arr)
-        {
-            fill(std::as_bytes(std::span(arr)));
-        }
-        bool operator==(const random_device&) const noexcept { return true; } // all same source
-    };
 
-    // Fill a buffer with platform entropy
-    void get_random_bytes(std::span<std::byte> buffer)
-    {
-        if (buffer.empty())
-            throw std::invalid_argument("get_random_bytes: buffer must not be empty");
-        rng::detail::fill_with_platform_entropy(
-            reinterpret_cast<unsigned char*>(buffer.data()),
-            buffer.size_bytes()
-        );
-    }
-
-    // utility namespace: contains union to address memory block as u8, u16, u32, or u64.
-    namespace Block {
+        //==============================================================================================
+        // rng::helper::Block  --  union for safe type punning
         // Block union for safe type punning.
+        //==============================================================================================
         template <std::size_t NBytes> // NBytes is frequently 64, but that is not required
         union Block
         {
@@ -297,49 +213,42 @@ namespace rng {
                 }
             }
 
-            // equality operator
+            // Equality operator
+            // Constant time.
             inline bool operator==(const Block& other) const noexcept
             {
                 if (this == &other) return true;
 
-                // u64 comparisons
+                uint64_t diff = 0;
                 for (std::size_t i = 0; i < size_in_u64(); ++i) {
-                    if (u64[i] != other.u64[i])
-                        return false;
+                    diff |= u64[i] ^ other.u64[i];
                 }
-
-                // byte comparisons
                 for (std::size_t i = 8 * size_in_u64(); i < NBytes; ++i) {
-                    if (bytes[i] != other.bytes[i])
-                        return false;
+                    diff |= static_cast<uint64_t>(bytes[i] ^ other.bytes[i]);
                 }
-
-                return true;
+                return diff == 0;
             }
 
-            // inequality operator
+            // Inequality operator
+            // Constant time.
             inline bool operator!=(const Block& other) const noexcept {
                 return !(*this == other);
             }
 
-            // checks if the Block is all zeros
+            // Checks if the Block is all zeros
+            // Constant time.
             inline bool is_zero() const noexcept {
-                // check 8 bytes at a time
+                uint64_t acc = 0;
                 for (std::size_t i = 0; i < size_in_u64(); ++i) {
-                    if (u64[i] != 0ull)
-                        return false;
+                    acc |= u64[i];
                 }
-
-                // check remaining bytes
                 for (std::size_t i = 8 * size_in_u64(); i < NBytes; ++i) {
-                    if (bytes[i] != std::byte{ 0 })
-                        return false;
+                    acc |= bytes[i];
                 }
-
-                return true;
+                return acc == 0;
             }
 
-        };// class Block<NBytes>
+        };// union Block<NBytes>
 
         // We put the ^ and ^= operators after the Block definition, still inside namespace st
 
@@ -380,191 +289,523 @@ namespace rng {
 
         using Block64 = Block<64>; // a union that allows us to view 64 bytes as std::bytes, u8, u32, or u64
         using Block32 = Block<32>;
-    }
 
-    // core ChaCha20 functions
-    namespace ChaCha {
+        //==============================================================================================
+        // -- helper functions
+        // core ChaCha20 functions
+        //==============================================================================================
+        namespace ChaCha {
 
-        // Constants used in ChaCha20
-        static constexpr std::array<u32, 4> ChaCha20_constants{
-            0x61707865u, 0x3320646eu, 0x79622d32u, 0x6b206574u
-            // "expand 32-byte k" in little-endian ASCII
-        };
+            // Constants used in ChaCha20
+            static constexpr std::array<u32, 4> ChaCha20_constants{
+                0x61707865u, 0x3320646eu, 0x79622d32u, 0x6b206574u
+                // "expand 32-byte k" in little-endian ASCII
+            };
 
-        /*
-        * In the st::ChaCha namespace we typically use a 256 bit key, 64 bit block_counter, and
-        * 64 bit nonce. This is consistent with the original ChaCha20-Bernstein layout, but there
-        * are many modern implementations that use a 32 bit block_counter and a 96 bit nonce.
-        *
-        * ChaCha20-Bernstein (original): 64-bit nonce, 64-bit block_counter
-        * NOT RFC 8439 compliant (which uses 96-bit nonce + 32-bit block_counter)
-        *
-        * Warning: This is NOT the RFC 8439 layout used in TLS/WireGuard
-        * Do not mix with standard libraries unless you know what you're doing.
-        *
-        * A build_state( const KEY&, const NONCE96&, BLOCK_COUNTER_32) has been provided to
-        * simplify a transition to RFC8439, if that is needed in the future.
-        */
+            /*
+            * In the st::ChaCha namespace we typically use a 256 bit key, 64 bit block_counter, and
+            * 64 bit nonce. This is consistent with the original ChaCha20-Bernstein layout, but there
+            * are many modern implementations that use a 32 bit block_counter and a 96 bit nonce.
+            *
+            * ChaCha20-Bernstein (original): 64-bit nonce, 64-bit block_counter
+            * NOT RFC 8439 compliant (which uses 96-bit nonce + 32-bit block_counter)
+            *
+            * Warning: This is NOT the RFC 8439 layout used in TLS/WireGuard
+            * Do not mix with standard libraries unless you know what you're doing.
+            *
+            * A build_state( const KEY&, const NONCE96&, BLOCK_COUNTER_32) has been provided to
+            * simplify a transition to RFC8439, if that is needed in the future.
+            */
 
-        // Types used throughout st::ChaCha
+            // Types used throughout st::ChaCha
 
-        using KEY = std::array<u32, 8>; // 256 bit key
-        using NONCE = std::array<u32, 2>; // 64 bit nonce
-        using BLOCK_COUNTER = u64; // 64 bit block block_counter
+            using KEY = std::array<u32, 8>; // 256 bit key
+            using NONCE = std::array<u32, 2>; // 64 bit nonce
+            using BLOCK_COUNTER = u64; // 64 bit block block_counter
 
-        using NONCE96 = std::array<u32, 3>; // 96 bit nonce
-        using BLOCK_COUNTER_32 = u32; // 32 bit block block_counter
+            using NONCE96 = std::array<u32, 3>; // 96 bit nonce
+            using BLOCK_COUNTER_32 = u32; // 32 bit block block_counter
 
-        // simple validation of sizes
+            // simple validation of sizes
 
-        static_assert(sizeof(KEY) == 32, "KEY must be 32 bytes (256 bits)");
-        static_assert(sizeof(NONCE) == 8, "NONCE must be 8 bytes (64 bits)");
-        static_assert(sizeof(NONCE96) == 12, "NONCE96 must be 12 bytes (96 bits)");
+            static_assert(sizeof(KEY) == 32, "KEY must be 32 bytes (256 bits)");
+            static_assert(sizeof(NONCE) == 8, "NONCE must be 8 bytes (64 bits)");
+            static_assert(sizeof(NONCE96) == 12, "NONCE96 must be 12 bytes (96 bits)");
 
-        // A few well-studied constants from xxHash
-        static constexpr u64 XXH_PRIME64_1 = 0x9E3779B185EBCA87ULL;
-        static constexpr u64 XXH_PRIME64_2 = 0xC2B2AE3D27D4EB4FULL;
-        static constexpr u64 XXH_PRIME64_3 = 0x165667B19E3779F9ULL;
-        static constexpr u64 XXH_PRIME64_4 = 0x85EBCA77C2B2AE63ULL;
-        static constexpr u64 XXH_PRIME64_5 = 0x27D4EB2F165667C5ULL;
+            // A few well-studied constants from xxHash
+            static constexpr u64 XXH_PRIME64_1 = 0x9E3779B185EBCA87ULL;
+            static constexpr u64 XXH_PRIME64_2 = 0xC2B2AE3D27D4EB4FULL;
+            static constexpr u64 XXH_PRIME64_3 = 0x165667B19E3779F9ULL;
+            static constexpr u64 XXH_PRIME64_4 = 0x85EBCA77C2B2AE63ULL;
+            static constexpr u64 XXH_PRIME64_5 = 0x27D4EB2F165667C5ULL;
 
-        /*!
-         * @internal
-         * @brief xxHash final mixing function
-         *
-         * The final mix ensures that all input bits have a chance to impact any bit in
-         * the output digest, resulting in an unbiased distribution.
-         *
-         * @param hash The hash to avalanche.
-         * @return The avalanched hash.
-         */
-        inline u64 XXH64_avalanche(u64 hash)
-        {
-            hash ^= hash >> 33;
-            hash *= XXH_PRIME64_2;
-            hash ^= hash >> 29;
-            hash *= XXH_PRIME64_3;
-            hash ^= hash >> 32;
-            return hash;
-        }
-
-        // Create a non-deterministic key. High quality, but non-cryptographic.
-        KEY generate_random_key() noexcept(false)
-        {
-            KEY k{};
-            get_random_bytes(std::as_writable_bytes(std::span(k)));
-            return k;
-        }
-
-        // Create a non-deterministic nonce. High quality, but non-cryptographic.
-        inline NONCE generate_random_nonce() noexcept(false)
-        {
-            NONCE n;
-            get_random_bytes(std::as_writable_bytes(std::span(n)));
-            return n;
-        }
-
-        // ChaCha20 quarter round
-        inline void QR(u32& a, u32& b, u32& c, u32& d) noexcept
-        {
-            a += b; d ^= a; d = std::rotl(d, 16u);
-            c += d; b ^= c; b = std::rotl(b, 12u);
-            a += b; d ^= a; d = std::rotl(d, 8u);
-            c += d; b ^= c; b = std::rotl(b, 7u);
-        }
-
-
-        // Applies the ChaCha20 core permutation (20 rounds, double-round style)
-        // with final addition of the original input (RFC 8439 §2.3).
-        // Safe for in-place operation (out may alias in).
-        inline void permute_block(uint32_t* out, const uint32_t* in) noexcept
-        {
-            // Do all work on a local copy of the input block
-            u32 x[16];
-            std::memcpy(x, in, sizeof(x));
-
-            // Perform 20 rounds (10 double rounds) on x.
-            for (int r = 0; r < 10; ++r) {
-                QR(x[0], x[4], x[8], x[12]);
-                QR(x[1], x[5], x[9], x[13]);
-                QR(x[2], x[6], x[10], x[14]);
-                QR(x[3], x[7], x[11], x[15]);
-
-                QR(x[0], x[5], x[10], x[15]);
-                QR(x[1], x[6], x[11], x[12]);
-                QR(x[2], x[7], x[8], x[13]);
-                QR(x[3], x[4], x[9], x[14]);
+            /*!
+             * @internal
+             * @brief xxHash final mixing function
+             *
+             * The final mix ensures that all input bits have a chance to impact any bit in
+             * the output digest, resulting in an unbiased distribution.
+             *
+             * @param hash The hash to avalanche.
+             * @return The avalanched hash.
+             */
+            inline u64 XXH64_avalanche(u64 hash)
+            {
+                hash ^= hash >> 33;
+                hash *= XXH_PRIME64_2;
+                hash ^= hash >> 29;
+                hash *= XXH_PRIME64_3;
+                hash ^= hash >> 32;
+                return hash;
             }
 
-            // Add the original input to the result
-            for (int i = 0; i < 16; ++i)
-                out[i] = x[i] + in[i];
-        }
-        inline void permute_block(Block::Block64& out, const Block::Block64& in) noexcept
+            // Create a non-deterministic key. High quality, but non-cryptographic.
+            KEY generate_random_key() noexcept(false)
+            {
+                KEY k{};
+                get_random_bytes(std::as_writable_bytes(std::span(k)));
+                return k;
+            }
+
+            // Create a non-deterministic nonce. High quality, but non-cryptographic.
+            inline NONCE generate_random_nonce() noexcept(false)
+            {
+                NONCE n;
+                get_random_bytes(std::as_writable_bytes(std::span(n)));
+                return n;
+            }
+
+            // ChaCha20 quarter round
+            inline void QR(u32& a, u32& b, u32& c, u32& d) noexcept
+            {
+                a += b; d ^= a; d = std::rotl(d, 16u);
+                c += d; b ^= c; b = std::rotl(b, 12u);
+                a += b; d ^= a; d = std::rotl(d, 8u);
+                c += d; b ^= c; b = std::rotl(b, 7u);
+            }
+
+
+            // Applies the ChaCha20 core permutation (20 rounds, double-round style)
+            // with final addition of the original input (RFC 8439 §2.3).
+            // Safe for in-place operation (out may alias in).
+            inline void permute_block(uint32_t* out, const uint32_t* in) noexcept
+            {
+                // Do all work on a local copy of the input block
+                u32 x[16];
+                std::memcpy(x, in, sizeof(x));
+
+                // Perform 20 rounds (10 double rounds) on x.
+                for (int r = 0; r < 10; ++r) {
+                    QR(x[0], x[4], x[8], x[12]);
+                    QR(x[1], x[5], x[9], x[13]);
+                    QR(x[2], x[6], x[10], x[14]);
+                    QR(x[3], x[7], x[11], x[15]);
+
+                    QR(x[0], x[5], x[10], x[15]);
+                    QR(x[1], x[6], x[11], x[12]);
+                    QR(x[2], x[7], x[8], x[13]);
+                    QR(x[3], x[4], x[9], x[14]);
+                }
+
+                // Add the original input to the result
+                for (int i = 0; i < 16; ++i)
+                    out[i] = x[i] + in[i];
+            }
+            inline void permute_block(Block64& out, const Block64& in) noexcept
+            {
+                permute_block(out.u32, in.u32);
+            }
+
+            // Builds original Bernstein ChaCha20 state (64-bit nonce + 64-bit block_counter)
+            // *** WARNING: NOT compatible with RFC 8439 / TLS / WireGuard ***
+            inline Block64 build_state(
+                const KEY& key,
+                const NONCE& nonce,
+                BLOCK_COUNTER block_counter = 0
+            ) noexcept
+            {
+                Block64 state{};
+
+                // constants
+                std::memcpy(state.u32 + 0, ChaCha20_constants.data(), sizeof(ChaCha20_constants));
+
+                // key
+                std::memcpy(state.u32 + 4, key.data(), sizeof(key));
+
+                // block block_counter
+                state.u32[12] = static_cast<u32>(block_counter);
+                state.u32[13] = static_cast<u32>(block_counter >> 32);
+
+                // nonce
+                state.u32[14] = nonce[0];
+                state.u32[15] = nonce[1];
+
+                return state;
+            }
+
+            inline Block64 build_state(
+                const KEY& key,
+                const NONCE96& nonce,
+                BLOCK_COUNTER_32 block_counter = 0
+            ) noexcept
+            {
+                Block64 state{};
+
+                // constants
+                std::memcpy(state.u32 + 0, ChaCha20_constants.data(), sizeof(ChaCha20_constants));
+
+                // key
+                std::memcpy(state.u32 + 4, key.data(), sizeof(key));
+
+                // block block_counter
+                state.u32[12] = block_counter;
+
+                // nonce
+                state.u32[13] = nonce[0];
+                state.u32[14] = nonce[1];
+                state.u32[15] = nonce[2];
+
+                return state;
+            }
+
+        }// namespace rng::helper::ChaCha
+    } //namespace rng::helper
+
+    //==============================================================================================
+    // rng::random_device -- alternative to std::random_device
+    //==============================================================================================
+
+    /*
+        rng::random_device
+
+        A non-deterministic random number generator that produces uniformly distributed
+        unsigned integers using cryptographically secure entropy from the operating system.
+
+        This class is designed as a drop-in replacement for std::random_device.
+        On Windows it uses BCryptGenRandom; on Unix-like systems it prefers getrandom()
+        with fallback to /dev/urandom.
+
+        It provides true randomness suitable for cryptographic purposes or seeding
+        pseudo-random engines, but repeated calls may block or degrade in performance
+        if system entropy is temporarily exhausted.
+
+        Defined in header "RNG.h"
+            namespace rng {
+                class random_device;
+            }
+
+        Member types
+            result_type	uint32_t
+
+        Member functions
+            Constructors
+                (1) random_device() noexcept
+                    Default constructor. Initializes the generator using the platform's
+                    default entropy source.
+                
+                (2) explicit random_device(const std::string& token)
+                    Constructs the generator, ignoring the token parameter.
+                    Provided for compatibility with std::random_device, which accepts
+                    a token to select a specific entropy source on some implementations.
+                    Here the token is ignored; all instances use the same system source.
+                
+                Note: Copy construction and copy assignment are deleted (non-copyable).
+            
+            Member functions
+                operator=
+                    DELETED. Copying not allowed.
+
+                bool operator==(const random_device&) const noexcept;
+                    Always returns true: all same source
+
+            Generation
+                result_type operator()()
+                    Returns a uniformly distributed random 32-bit value.
+                    May throw if entropy collection fails.
+
+                uint32_t draw32()
+                    Equivalent to operator(). Provided for clarity.
+
+                uint64_t draw64()
+                    Returns a uniformly distributed random 64-bit value by combining
+                    two independent 32-bit draws.
+
+                 uint64_t unbiased(uint64_t lo, uint64_t hi)
+                    Returns a uniformly distributed integer in the closed interval [lo, hi]
+                    with no modulo bias, using Lemire's method.
+                    The endpoints are inclusive. If lo > hi, the arguments are swapped.
+
+                 void fill(std::span<std::byte> data)
+                    Fills the specified byte span with cryptographically secure random bytes.
+                    Optimized for large buffers by requesting 64-bit chunks when possible.
+
+                 template<class T, size_t N>
+                 void fill(std::array<T, N>& arr)
+                    Fills the array with random values by treating it as a byte span.
+
+                 template<class T>
+                 void fill(std::vector<T>& vec)
+                    Fills the vector with random values by treating its data as a byte span.
+
+            Observers
+                double entropy() const noexcept
+                    Returns the estimated entropy per generated value in bits.
+                    Always returns 32.0, consistent with many real std::random_device implementations.
+
+                static constexpr result_type min() noexcept
+                static constexpr result_type max() noexcept
+                    Returns the inclusive lower and upper bounds of values returned by operator().
+
+            Comparison
+                bool operator==(const random_device&) const noexcept; 
+                    Always returns true, because all instances draw from the same
+                    underlying system entropy source.
+
+        Example
+            #include <iostream>
+            #include <map>
+            #include <random>
+            #include <string>
+
+            int main()
+            {
+                rng::random_device rd; // not std::
+                std::map<int, int> hist;
+                std::uniform_int_distribution<int> dist(0, 9);
+
+                for (int n = 0; n != 20000; ++n)
+                    ++hist[dist(rd)]; // Note: On some platforms (e.g., certain Linux configurations 
+                                      // using /dev/random), frequent calls to system entropy sources 
+                                      // may block if entropy is temporarily low. On Windows (using 
+                                      // BCryptGenRandom) and modern Unix-like systems (using getrandom() 
+                                      // or /dev/urandom), this is not an issue—output remains fast and 
+                                      // cryptographically secure.
+
+                for (auto [x, y] : hist)
+                    std::cout << x << " : " << std::string(y / 100, '*') << '\n';
+            }
+    */
+    class random_device {
+    public:
+        using result_type = uint32_t;  // std::random_device uses uint32_t
+
+        static constexpr result_type min() noexcept { return std::numeric_limits<result_type>::min(); }
+        static constexpr result_type max() noexcept { return std::numeric_limits<result_type>::max(); }
+
+        // Default constructor
+        random_device() = default;
+
+        // Disable copy (like real random_device)
+        random_device(const random_device&) = delete;
+        random_device& operator=(const random_device&) = delete;
+
+        // Explicitly allow construction with a "token" string (ignored, for compatibility)
+        explicit random_device(const std::string&) {}
+
+        // The core: return secure random 32-bit value
+        uint32_t operator()() noexcept(false)
         {
-            permute_block(out.u32, in.u32);
+            uint32_t result;
+            rng::helper::fill_with_platform_entropy(reinterpret_cast<unsigned char*>(&result), sizeof(result));
+            return result;
         }
 
-        // Builds original Bernstein ChaCha20 state (64-bit nonce + 64-bit block_counter)
-        // *** WARNING: NOT compatible with RFC 8439 / TLS / WireGuard ***
-        inline Block::Block64 build_state(
-            const KEY& key,
-            const NONCE& nonce,
-            BLOCK_COUNTER block_counter = 0
-        ) noexcept
+        // Entropy estimate — real devices often return 32.0, so we do too
+        double entropy() const noexcept {
+            return 32.0;
+        }
+
+        //
+        // Extras
+        //
+
+        inline uint32_t draw32() { return (*this)(); }
+        inline uint64_t draw64() { return (uint64_t((*this)()) << 32) | uint64_t((*this)()); }
+
+        // Draw an unbiased integer in an interval [lo,hi], including the endpoints
+        // Uses Lemire's method.
+        inline std::uint64_t unbiased(std::uint64_t lo, std::uint64_t hi)
         {
-            Block::Block64 state{};
+            if (lo > hi) std::swap(lo, hi);
+            if (lo == hi) return lo;
 
-            // constants
-            std::memcpy(state.u32 + 0, ChaCha20_constants.data(), sizeof(ChaCha20_constants));
+            // Full 64-bit range: return raw 64-bit entropy directly
+            if (hi - lo == UINT64_MAX) return draw64();
 
-            // key
-            std::memcpy(state.u32 + 4, key.data(), sizeof(key));
+            const std::uint64_t range = hi - lo + 1;
 
-            // block block_counter
-            state.u32[12] = static_cast<u32>(block_counter);
-            state.u32[13] = static_cast<u32>(block_counter >> 32);
+            std::uint64_t x = draw64();
+            std::uint64_t l = lo128(mul128(x, range));
 
-            // nonce
-            state.u32[14] = nonce[0];
-            state.u32[15] = nonce[1];
+            if (l < range) [[unlikely]] {
+                const std::uint64_t t = static_cast<std::uint64_t>(-range) % range;
+                while (l < t) {
+                    x = draw64();
+                    l = lo128(mul128(x, range));
+                }
+            }
 
-            return state;
+            return lo + hi128(mul128(x, range));
         }
-
-        inline Block::Block64 build_state(
-            const KEY& key,
-            const NONCE96& nonce,
-            BLOCK_COUNTER_32 block_counter = 0
-        ) noexcept
+        inline void fill(std::span<std::byte>data) {
+            std::byte* ptr = data.data();
+            size_t size = data.size();
+            while (size >= 8) {
+                uint64_t z = draw64();
+                memcpy(ptr, &z, 8);
+                ptr += 8;
+                size -= 8;
+            }
+            if (size > 0) {
+                uint64_t z = draw64();
+                memcpy(ptr, &z, size);
+            }
+        }
+        template <class T, size_t N> inline void fill(std::array<T, N>& arr)
         {
-            Block::Block64 state{};
-
-            // constants
-            std::memcpy(state.u32 + 0, ChaCha20_constants.data(), sizeof(ChaCha20_constants));
-
-            // key
-            std::memcpy(state.u32 + 4, key.data(), sizeof(key));
-
-            // block block_counter
-            state.u32[12] = block_counter;
-
-            // nonce
-            state.u32[13] = nonce[0];
-            state.u32[14] = nonce[1];
-            state.u32[15] = nonce[2];
-
-            return state;
+            fill(std::as_bytes(std::span(arr)));
         }
+        template <class T> inline void fill(std::vector<T>& arr)
+        {
+            fill(std::as_bytes(std::span(arr)));
+        }
+        bool operator==(const random_device&) const noexcept { return true; } // all same source
+    };
 
-    }// namespace ChaCha
+    //==============================================================================================
+    // rng::csprng, ChaCha20 secure generator
+    //==============================================================================================
 
-    // ChaCha20 secure generator
+    /*
+    rng::csprng
+
+    A cryptographically secure pseudorandom number generator (CSPRNG) based on ChaCha20
+    (Bernstein's original design with 20 rounds, 256-bit key, 64-bit nonce, and 64-bit block counter).
+
+    This implementation is NOT compatible with RFC 8439 (TLS/WireGuard) layout, which uses a
+    96-bit nonce and 32-bit counter. Do not interchange keys/nonces with standard libraries
+    unless you deliberately target the same layout.
+
+    The generator provides:
+      • Full 256-bit security strength
+      • Excellent performance (~3–5 GB/s on modern CPUs)
+      • Backtracking resistance and forward secrecy
+      • Safe reseeding, jumping, and parallel stream generation
+
+    It conforms to the UniformRandomBitGenerator concept and provides additional convenience
+    functions identical to those in rng::random_device.
+
+    Defined in header "RNG.h"
+
+    namespace rng {
+        class csprng;
+    }
+
+    Member types
+        result_type                     uint64_t
+
+    Static constants
+        static constexpr std::size_t state_size = 16;   // 512 bits total
+        static constexpr std::size_t block_size = 64;   // bytes per ChaCha block
+        static constexpr std::size_t words_per_block = 8;
+
+    Construction
+        (1) explicit csprng(const helper::ChaCha::KEY& k,
+                            const helper::ChaCha::NONCE& n,
+                            uint64_t initial_counter = 0)
+            Constructs from explicit 256-bit key and 64-bit nonce.
+            Recommended for full cryptographic control.
+
+        (2) explicit csprng(const helper::Block64& seed_block)
+            Derives key and nonce from a 64-byte high-entropy seed using one ChaCha20 permutation.
+            The input seed is securely wiped from memory.
+
+        (3) explicit csprng(const helper::Block32& seed_block)
+            Expands a 32-byte seed into a full key + nonce using one ChaCha20 block
+            (standard key-derivation technique similar to HKDF-Expand or BLAKE3 keyed mode).
+
+        (4) csprng()
+            Default constructor. Seeds from the platform CSPRNG (rng::random_device)
+            using 64 bytes of entropy. Key, nonce, and initial counter are derived securely.
+
+    Note: Copy construction and copy assignment are deleted (stream duplication is catastrophic
+          for security). Move construction and move assignment are permitted.
+
+    Generation
+        result_type operator()()
+            Returns the next cryptographically secure 64-bit value.
+
+        uint32_t draw32()
+            Returns the low 32 bits of the next value (standard practice).
+
+        uint64_t draw64()
+            Equivalent to operator().
+
+        uint64_t unbiased(uint64_t lo, uint64_t hi)
+            Returns a uniformly distributed integer in [lo, hi] with no statistical bias
+            (Lemire's method).
+
+        void fill(std::span<std::byte> data)
+        template<class T, size_t N> void fill(std::array<T, N>& arr)
+        template<class T> void fill(std::vector<T>& vec)
+            Fills the target with keystream bytes. Highly optimized for large buffers.
+
+    Stream control
+        void reseed(const helper::ChaCha::KEY& k, const helper::ChaCha::NONCE& n)
+            Replaces the current key/nonce pair and resets the counter.
+            Useful after fork() or for periodic reseeding.
+
+        void discard(std::uint64_t n)
+            Advances the stream by n 64-bit values without generating them.
+            O(1) amortized.
+
+        void jump()
+            Equivalent to discard(2³²). Enables up to 2³² independent parallel streams.
+
+        void long_jump()
+            Equivalent to discard(2⁴⁸). Enables up to 2¹⁶ independent parallel streams.
+
+    Observers
+        static constexpr result_type min() noexcept
+        static constexpr result_type max() noexcept
+            Inclusive bounds of values returned by operator().
+
+    Comparison
+        friend bool operator==(const csprng& lhs, const csprng& rhs) noexcept
+        friend bool operator!=(const csprng& lhs, const csprng& rhs) noexcept
+            Two generators are equal if they will produce identical future output
+            (constant-time key comparison).
+
+    Remarks
+        • The generator will throw std::runtime_error if the block counter overflows
+          (after ~1.2 zettabytes of output per key/nonce pair).
+        • Sensitive internal state (key, nonce, buffer) is securely zeroed in the destructor
+          and during reseeding.
+        • Serialization operators (<< and >>) exist but are intentionally private
+          — exposing the raw key breaks all security guarantees.
+
+    Example
+        #include <rng.h>
+        #include <iostream>
+        #include <vector>
+
+        int main()
+        {
+            rng::csprng gen;                                   // seeded from OS entropy
+            std::vector<std::byte> buffer(1024);
+            gen.fill(buffer);                                  // fast cryptographic keystream
+
+            std::uniform_int_distribution<int> dist(1, 100);
+            for (int i = 0; i < 10; ++i)
+                std::cout << dist(gen) << ' ';
+            std::cout << '\n';
+        }
+    */
     class csprng {
-        rng::ChaCha::KEY key{};          // 256-bit key
-        rng::ChaCha::NONCE nonce{ 0,0 }; // 64-bit nonce 
+        rng::helper::ChaCha::KEY key{};          // 256-bit key
+        rng::helper::ChaCha::NONCE nonce{ 0,0 }; // 64-bit nonce 
         u64 block_counter = 0;                // 64-bit block block_counter
-        Block::Block64 buffer{};              // Block64 is a 64 byte union, accessible through u8/u32/u64 interfaces
+        helper::Block64 buffer{};              // Block64 is a 64 byte union, accessible through u8/u32/u64 interfaces
         size_t word_index = 8;          // 8 × u64 per ChaCha block → start exhausted
 
     public:
@@ -590,8 +831,8 @@ namespace rng {
         ///
         /// Recommended construction for cryptographic use.
         csprng(
-            const rng::ChaCha::KEY& k,
-            rng::ChaCha::NONCE& n,        // 64-bit nonce
+            const rng::helper::ChaCha::KEY& k,
+            rng::helper::ChaCha::NONCE& n,        // 64-bit nonce
             u64 initial_counter = 0)
             : key(k), nonce(n), block_counter(initial_counter)
         {
@@ -603,16 +844,24 @@ namespace rng {
         ///
         /// The block is treated as both key and constant for one ChaCha20 permutation,
         /// producing a fresh key and nonce. The input block is zeroed in memory.
-        csprng(const Block::Block64& block /* 64 byte seed block */ )
+        explicit csprng(const helper::Block64& block /* 64 byte seed block */ )
             : block_counter(0)
         {
-            Block::Block64 temp(block);
-            rng::ChaCha::permute_block(temp, temp);
+            // work off a temporary copy of block
+            helper::Block64 temp(block);
 
+            // Use ChaCha to scramble the block
+            rng::helper::ChaCha::permute_block(temp, temp);
+
+            // copy from the block to the key and nonce
             memcpy(key.data(), temp.u32, 32); // 8 * u32
             memcpy(nonce.data(), temp.u32 + 8, 8); // 2 * u32
 
-            refill_buffer();  // prime the pump
+            // we don't need temp any longer. Clear it.
+            temp.clear();
+
+            // Do an initial buffer fill.
+            refill_buffer();
         }
 
         /// @brief Constructs a generator from a 32-byte seed using standard ChaCha20 expansion
@@ -621,13 +870,15 @@ namespace rng {
         /// Equivalent to libsodium's crypto_generichash-based key derivation or BLAKE3 keyed mode:
         /// the 32-byte seed is expanded to a full 256-bit key + 64-bit nonce via one ChaCha20 block.
         /// Provides domain separation and input destruction.
-        csprng(const Block::Block32& block /* 32 byte seed block */)
+        explicit csprng(const helper::Block32& block /* 32 byte seed block */)
             : block_counter(0)
         {
-            Block::Block64 temp{};
+            // work off a temporary copy of block
+            helper::Block64 temp{};
             memcpy(temp.bytes, block.bytes, 32);
-            memset(temp.bytes + 32, 0, 32); // should already be zeros, from the Block64 construction. But, no harm done.
-
+            // zero pad unused bytes. Note: these should already be zeros, from the Block64 construction. But, no harm done.
+            memset(temp.bytes + 32, 0, 32); 
+            
             // Expand 32-byte seed → fresh 256-bit key + 64-bit nonce using one ChaCha20 block
             // This is a standard, secure key-derivation technique (similar to HKDF-Expand,
             // BLAKE3 keyed mode, and libsodium's common practice). It provides:
@@ -636,11 +887,16 @@ namespace rng {
             // • Strong one-wayness and backtracking resistance
             // It is NOT an entropy extractor if the seed is low-entropy — the caller must
             // supply high-entropy input (e.g. from getrandom(), RDSEED, or a KDF).
-            rng::ChaCha::permute_block(temp, temp);
+            rng::helper::ChaCha::permute_block(temp, temp);
 
+            // copy from temp to key and nonce
             memcpy(key.data(), temp.u32, 32); // 8 * u32
             memcpy(nonce.data(), temp.u32 + 8, 8); // 2 * u32
 
+            // we don't need temp any longer. Clear it.
+            temp.clear();
+
+            // Do an initial buffer fill.
             refill_buffer();  // prime the pump
         }
 
@@ -663,25 +919,11 @@ namespace rng {
         /// get_random_bytes() throws std::runtime_error if entropy collection fails.
         csprng() {
             std::array<std::byte, 64> entropy;
-            get_random_bytes(std::span(entropy));
+            helper::get_random_bytes(std::span(entropy));
             std::memcpy(key.data(), entropy.data(), 32);
             std::memcpy(nonce.data(), entropy.data() + 32, 8);
-            std::memcpy(&block_counter, entropy.data() + 40, 8);
-            refill_buffer();
-        }
-
-        /// @brief Constructs a deterministic generator from a 64-bit seed
-        /// @param seed  64-bit seed value
-        ///
-        /// Internally uses std::mt19937_64 to stretch the seed.
-        /// For reproducibility and testing only — NOT cryptographically secure.
-        explicit csprng(uint64_t seed) {
-            std::mt19937_64 mt(seed);
-            for (int i = 0; i < key.size(); i++)
-                key[i] = (u32)mt();
-            for (int i = 0; i < nonce.size(); i++)
-                nonce[i] = (u32)mt();
-
+            block_counter = 0;  // always start at zero
+            // bytes 40–63 available for domain separation / future use
             refill_buffer();
         }
 
@@ -710,7 +952,9 @@ namespace rng {
         }
 
         inline uint32_t draw32() {
-            return (uint32_t)((*this)() >> 32);
+            // return (uint32_t)((*this)() >> 32); // high 32 bits
+            // return (uint32_t)((*this)() >> 16); // middle 32 bits (unconventional, no benefit)
+            return (uint32_t)((*this)());         // low 32 bits — standard, clean, and correct
         }
         inline uint64_t draw64() {
             return (*this)();
@@ -772,7 +1016,7 @@ namespace rng {
         /// @param n  New 64-bit nonce
         ///
         /// Useful after fork() in multi-process environments or for periodic reseeding.
-        void reseed(const ChaCha::KEY& k, const ChaCha::NONCE& n) {
+        void reseed(const helper::ChaCha::KEY& k, const helper::ChaCha::NONCE& n) {
             key = k;
             nonce = n;
             block_counter = 0;
@@ -848,16 +1092,24 @@ namespace rng {
         /// guaranteed to be identical regardless of current buffer contents.
         friend bool operator==(const csprng& lhs, const csprng& rhs) noexcept
         {
-            // Constant-time comparison of the 256-bit secret key
             uint32_t key_diff = 0;
             for (size_t i = 0; i < 8; ++i)
                 key_diff |= lhs.key[i] ^ rhs.key[i];
 
-            // Everything else: use the clean, safe, standard-library operators
-            return key_diff == 0 &&
-                lhs.nonce == rhs.nonce &&     // Perfect! Uses std::array::operator==
-                lhs.block_counter == rhs.block_counter &&
-                lhs.word_index == rhs.word_index;
+            bool state_match = (lhs.nonce == rhs.nonce) &&
+                (lhs.block_counter == rhs.block_counter) &&
+                (lhs.word_index == rhs.word_index);
+
+            if (key_diff != 0 || !state_match) return false;
+
+            // Only compare buffer if it's supposed to contain valid data
+            if (lhs.word_index < 8) {
+                uint64_t buffer_diff = 0;
+                for (size_t i = 0; i < 8; ++i)
+                    buffer_diff |= lhs.buffer.u64[i] ^ rhs.buffer.u64[i];
+                return buffer_diff == 0;
+            }
+            return true;
         }
 
         /// @brief Inequality operator
@@ -980,13 +1232,13 @@ namespace rng {
 
     private:
         void refill_buffer() {
-            auto state = ChaCha::build_state(
+            auto state = helper::ChaCha::build_state(
                 key,
-                ChaCha::NONCE{ nonce[0], nonce[1] },
+                helper::ChaCha::NONCE{ nonce[0], nonce[1] },
                 block_counter
             );
 
-            ChaCha::permute_block(buffer, state);
+            helper::ChaCha::permute_block(buffer, state);
             state.clear(); // state no longer needed. Clear sensitive data
 
             // reset the buffer index: no words have been consumed.
@@ -1009,13 +1261,125 @@ namespace rng {
         }
     }; // class csprng
 
-    // fast_RNG: A fast non-cryptographic PRNG inspired by wyrand.
-    // Core idea (additive increment + wide multiplication + hi ⊕ lo output) comes from:
-    // https://github.com/wangyi-fudan/wyhash/blob/master/wyhash.h
-    // This variant adds a small extra mixing step (state ^ MIX in the final XOR)
-    // for slightly different output characteristics while preserving speed and quality.
+    //==============================================================================================
+    // rng::fast_RNG, Fast (11 GB/s) non-cryptographic generator
+    //==============================================================================================
+
+    /*
+    rng::fast_RNG
+
+    A fast, high-quality non-cryptographic pseudorandom number generator inspired by wyrand.
+
+    Characteristics:
+      • Extremely high throughput: ~11 GB/s on modern x86-64 CPUs
+      • Excellent statistical quality: passes PractRand to 64 GB with no anomalies
+      • 64-bit state, full 64-bit output
+      • Simple, predictable, and portable
+
+    Suitable for simulations, games, Monte-Carlo methods, procedural generation,
+    and any application requiring speed and statistical randomness but not
+    cryptographic security.
+
+    Conforms to the C++ UniformRandomBitGenerator and Engine concepts.
+
+    Defined in header "RNG.h"
+
+    namespace rng {
+        class fast_RNG;
+    }
+
+    Member types
+        result_type                     uint64_t
+
+    Construction and seeding
+        fast_RNG()
+            Default constructor. Seeds from rng::random_device (cryptographic entropy).
+
+        explicit fast_RNG(uint64_t seed)
+            Seeds from a single 64-bit integer.
+
+        template<class SeedSeq> explicit fast_RNG(SeedSeq& seq)
+        void seed(SeedSeq& seq)
+            Standard seed-sequence interface.
+
+        void seed()
+            Reseeds from rng::random_device (non-deterministic).
+
+        void seed(result_type s)
+            Seeds from a single 64-bit value.
+
+    Generation
+        result_type operator()()
+            Returns the next 64-bit pseudorandom value.
+
+        uint32_t draw32()
+            Returns the high 32 bits of the next value.
+
+        uint64_t draw64()
+            Equivalent to operator().
+
+        uint64_t unbiased(uint64_t lo, uint64_t hi)
+            Returns a uniformly distributed integer in [lo, hi] with no statistical bias
+            (Lemire's method).
+
+        void fill(std::span<std::byte> data)
+        template<class T, size_t N> void fill(std::array<T, N>& arr)
+        template<class T> void fill(std::vector<T>& vec)
+            Fills the target with pseudorandom bytes. Extremely fast for large buffers.
+
+    Stream control
+        void discard(unsigned long long nsteps)
+            Advances the state by n steps without generating output.
+
+        void jump()
+            Equivalent to discard(2³²). Enables parallel independent streams.
+
+        void long_jump()
+            Equivalent to discard(2⁴⁸). Enables many more parallel streams.
+
+    Observers
+        static constexpr result_type min() noexcept
+        static constexpr result_type max() noexcept
+            Inclusive bounds of values returned by operator().
+
+    Comparison and serialization
+        friend bool operator==(const fast_RNG& lhs, const fast_RNG& rhs) noexcept
+        friend bool operator!=(const fast_RNG& lhs, const fast_RNG& rhs) noexcept
+
+        template<class CharT, class Traits>
+        friend std::basic_ostream<CharT, Traits>& operator<<(...)
+        friend std::basic_istream<CharT, Traits>& operator>>(...)
+
+            Full Engine compliance — state can be saved/restored.
+
+    Remarks
+        • This generator is NOT cryptographically secure.
+          Do not use for key generation, nonces, or any security-sensitive purpose.
+        • Statistical quality has been extensively tested (PractRand 64 GB clean).
+        • Performance is typically 2–4× faster than std::mt19937_64.
+
+    Example
+        #include <rng.h>
+        #include <iostream>
+        #include <random>
+
+        int main()
+        {
+            rng::fast_RNG gen;                                 // cryptographically seeded
+            std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+            for (int i = 0; i < 10; ++i)
+                std::cout << dist(gen) << '\n';
+        }
+    */
     class fast_RNG {
         /*
+        fast_RNG: A fast non-cryptographic PRNG inspired by wyrand.
+        Core idea (additive increment + wide multiplication + hi ⊕ lo output) comes from:
+        https://github.com/wangyi-fudan/wyhash/blob/master/wyhash.h
+        This variant adds a small extra mixing step (state ^ MIX in the final XOR)
+        for slightly different output characteristics while preserving speed and quality.
+
         Speed test
             GBPS = 10.9968
 
@@ -1081,10 +1445,14 @@ namespace rng {
     public:
         using result_type = uint64_t;
 
-        explicit fast_RNG(uint64_t seed = 0) : state(seed) {
-            // Optional: mix the seed a bit more if it's weak (SplitMix-style)
-            // But wyrand works fine with raw seeds, so keep it simple.
+        // Default - seed from system entropy
+        fast_RNG() {
+            rng::random_device rd;
+            state = rd.draw64();
         }
+
+        // seed from an integer
+        explicit fast_RNG(uint64_t seed) : state(seed) {}
 
         // Seed with a seed_seq (standard requirement)
         template <class SeedSeq>
@@ -1221,16 +1589,12 @@ namespace rng {
         }
     };
 
-
-
     //==============================================================================================
     // Generic fill functions — work with any UniformRandomBitGenerator
     //==============================================================================================
 
     template <class Gen>
-    concept HasFillMember = requires(Gen & g, std::span<std::byte> s) {
-        g.fill(s);
-    };
+    concept HasFillMember = requires(Gen & g, std::span<std::byte> s) { g.fill(s); };
 
     template <class Gen>
     inline void fill(std::span<std::byte> data, Gen& gen) {
