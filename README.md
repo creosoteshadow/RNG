@@ -70,6 +70,18 @@ Utilities
 rng::get_random_bytes(std::span<std::byte>) – Fill arbitrary buffers with secure entropy.
 rng::Block::Block<N> – Safe union for viewing fixed-size byte blocks as u8, u16, u32, or u64 arrays.
 
+### Benchmarks and Statistical Testing
+
+Tested on Windows 11, MSVC 2022, Intel Core i7-13700K (single thread).
+
+| Generator            | Speed (GB/s) | PractRand (2 GB) | Notes |
+|----------------------|--------------|------------------|-------|
+| `rng::random_device` | ~0.06       | No anomalies    | Limited by OS entropy rate (BCryptGenRandom). Expected behavior. |
+| `rng::csprng`        | ~0.52       | No anomalies    | Strong for software ChaCha20 (comparable implementations: 0.3–1.0 GB/s). |
+| `rng::fast_RNG`      | ~10.7       | No anomalies    | Matches wyrand (~10–12 GB/s) while passing rigorous tests. Previously tested to 64 GiB clean. |
+
+See `RNG_test.h` for the tester and `RNG_test_results*` files for raw/reproduced output.
+
 # Build & Usage
 
 Bash git clone https://github.com/creosoteshadow/RNG.git
