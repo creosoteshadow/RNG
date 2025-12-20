@@ -4,7 +4,17 @@
 [![Header-only](https://img.shields.io/badge/Style-Header%20Only-brightgreen)](https://en.wikipedia.org/wiki/Header-only)
 [![PractRand Clean](https://img.shields.io/badge/PractRand-64%20GiB%20Clean-success)](https://github.com/creosoteshadow/RNG/blob/main/RNG_test_results_raw.txt)
 
-rng – A Modern C++ Random Number Generator Suite
+## Contents
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Classes Overview](#classes-overview)
+- [Benchmarks and Statistical Testing](#benchmarks-and-statistical-testing)  <!-- if you have this section -->
+- [Build & Usage](#build--usage)
+- [Notes & Warnings](#notes--warnings)
+- [References](#references)
+- [License](#license)
+
+rng – A Modern C++ Random Number Generator Suite  
 A lightweight, header-only (with companion .cpp) C++20 library providing three high-quality random number generators:
 
   - rng::random_device – A standards-conforming drop-in replacement for std::random_device using the platform’s cryptographically secure entropy source.
