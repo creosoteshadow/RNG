@@ -254,7 +254,7 @@ namespace rng {
 
         // ^ operator: bitwise XOR of two Blocks
         template <std::size_t NBytes>
-        Block<NBytes> operator^(const Block<NBytes>& a, const Block<NBytes>& b) noexcept
+        inline Block<NBytes> operator^(const Block<NBytes>& a, const Block<NBytes>& b) noexcept
         {
             Block<NBytes> result;
             std::size_t qwords = Block<NBytes>::size_in_u64();
@@ -271,7 +271,7 @@ namespace rng {
 
         // ^= operator: in-place bitwise XOR of two Blocks
         template <std::size_t NBytes>
-        Block<NBytes>& operator^=(Block<NBytes>& a, const Block<NBytes>& b) noexcept
+        inline Block<NBytes>& operator^=(Block<NBytes>& a, const Block<NBytes>& b) noexcept
         {
             std::size_t qwords = Block<NBytes>::size_in_u64();
             std::size_t tail = NBytes - 8 * qwords;
@@ -360,7 +360,7 @@ namespace rng {
             }
 
             // Create a non-deterministic key. High quality, but non-cryptographic.
-            KEY generate_random_key() noexcept(false)
+            inline KEY generate_random_key() noexcept(false)
             {
                 KEY k{};
                 get_random_bytes(std::as_writable_bytes(std::span(k)));
@@ -622,31 +622,32 @@ namespace rng {
         inline uint32_t draw32() { return (*this)(); }
         inline uint64_t draw64() { return (uint64_t((*this)()) << 32) | uint64_t((*this)()); }
 
-        // Draw an unbiased integer in an interval [lo,hi], including the endpoints
-        // Uses Lemire's method.
+        // Returns a uniformly distributed integer in [lo, hi] using Lemire's unbiased method.
+        // Handles all edge cases (including full 64-bit range) without statistical bias.
         inline std::uint64_t unbiased(std::uint64_t lo, std::uint64_t hi)
         {
             if (lo > hi) std::swap(lo, hi);
             if (lo == hi) return lo;
 
-            // Full 64-bit range: return raw 64-bit entropy directly
-            if (hi - lo == UINT64_MAX) return draw64();
-
             const std::uint64_t range = hi - lo + 1;
+            if (range == 0) return draw64();  // full 64-bit range
 
             std::uint64_t x = draw64();
-            std::uint64_t l = lo128(mul128(x, range));
+            uint128_t m = mul128(x, range);
+            std::uint64_t l = lo128(m);
 
             if (l < range) [[unlikely]] {
-                const std::uint64_t t = static_cast<std::uint64_t>(-range) % range;
+                const std::uint64_t t = (std::numeric_limits<std::uint64_t>::max() - range + 1) % range;
                 while (l < t) {
                     x = draw64();
-                    l = lo128(mul128(x, range));
+                    m = mul128(x, range);
+                    l = lo128(m);
                 }
             }
 
-            return lo + hi128(mul128(x, range));
+            return lo + hi128(m);
         }
+
         inline void fill(std::span<std::byte>data) {
             std::byte* ptr = data.data();
             size_t size = data.size();
@@ -960,31 +961,32 @@ namespace rng {
             return (*this)();
         }
 
-        // Draw an unbiased integer in an interval [lo,hi], including the endpoints
-        // Uses Lemire's method.
+        // Returns a uniformly distributed integer in [lo, hi] using Lemire's unbiased method.
+        // Handles all edge cases (including full 64-bit range) without statistical bias.
         inline std::uint64_t unbiased(std::uint64_t lo, std::uint64_t hi)
         {
             if (lo > hi) std::swap(lo, hi);
             if (lo == hi) return lo;
 
-            // Full 64-bit range: return raw 64-bit entropy directly
-            if (hi - lo == UINT64_MAX) return draw64();
-
             const std::uint64_t range = hi - lo + 1;
+            if (range == 0) return draw64();  // full 64-bit range
 
             std::uint64_t x = draw64();
-            std::uint64_t l = lo128(mul128(x, range));
+            uint128_t m = mul128(x, range);
+            std::uint64_t l = lo128(m);
 
             if (l < range) [[unlikely]] {
-                const std::uint64_t t = static_cast<std::uint64_t>(-range) % range;
+                const std::uint64_t t = (std::numeric_limits<std::uint64_t>::max() - range + 1) % range;
                 while (l < t) {
                     x = draw64();
-                    l = lo128(mul128(x, range));
+                    m = mul128(x, range);
+                    l = lo128(m);
                 }
             }
 
-            return lo + hi128(mul128(x, range));
+            return lo + hi128(m);
         }
+
         inline void fill(std::span<std::byte>data) {
             std::byte* ptr = data.data();
             size_t size = data.size();
@@ -1528,27 +1530,30 @@ namespace rng {
             return (*this)();
         }
 
-        // Lemire's unbiased bounded integer — identical to the others
-        inline uint64_t unbiased(uint64_t lo, uint64_t hi) {
+        // Returns a uniformly distributed integer in [lo, hi] using Lemire's unbiased method.
+        // Handles all edge cases (including full 64-bit range) without statistical bias.
+        inline std::uint64_t unbiased(std::uint64_t lo, std::uint64_t hi)
+        {
             if (lo > hi) std::swap(lo, hi);
             if (lo == hi) return lo;
 
-            if (hi - lo == UINT64_MAX) return draw64();
+            const std::uint64_t range = hi - lo + 1;
+            if (range == 0) return draw64();  // full 64-bit range
 
-            const uint64_t range = hi - lo + 1;
-
-            uint64_t x = draw64();
-            uint64_t l = lo128(mul128(x, range));
+            std::uint64_t x = draw64();
+            uint128_t m = mul128(x, range);
+            std::uint64_t l = lo128(m);
 
             if (l < range) [[unlikely]] {
-                const uint64_t t = static_cast<uint64_t>(-range) % range;
+                const std::uint64_t t = (std::numeric_limits<std::uint64_t>::max() - range + 1) % range;
                 while (l < t) {
                     x = draw64();
-                    l = lo128(mul128(x, range));
+                    m = mul128(x, range);
+                    l = lo128(m);
                 }
             }
 
-            return lo + hi128(mul128(x, range));
+            return lo + hi128(m);
         }
 
         // fill() overloads — identical to the others
