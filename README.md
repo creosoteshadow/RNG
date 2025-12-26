@@ -14,12 +14,12 @@
 - [References](#references)
 - [License](#license)
 
-rng – A Modern C++ Random Number Generator Suite  
+RNG – A Modern C++ Random Number Generator Suite  
 A lightweight, header-only (with companion .cpp) C++20 library providing three high-quality random number generators:
 
-  - rng::random_device – A standards-conforming drop-in replacement for std::random_device using the platform’s cryptographically secure entropy source.
-  - rng::csprng – A fast, cryptographically secure PRNG based on ChaCha20 (original Bernstein layout).
-  - rng::fast_RNG – An extremely fast non-cryptographic PRNG inspired by wyrand (passes PractRand with no anomalies up to 64 GiB).
+  - RNG::random_device – A standards-conforming drop-in replacement for std::random_device using the platform’s cryptographically secure entropy source.
+  - RNG::csprng – A fast, cryptographically secure PRNG based on ChaCha20 (original Bernstein layout).
+  - RNG::fast_RNG – An extremely fast non-cryptographic PRNG inspired by wyrand (passes PractRand with no anomalies up to 64 GiB).
 
 Also includes convenient utilities for filling buffers with secure random bytes and safe type-punning via rng::Block.
 Features
@@ -38,33 +38,33 @@ Thoroughly commented – Extensive documentation in the code for future maintena
     
     int main() {
         // 1. Cryptographically secure randomness
-        rng::csprng secure;  // seeded from OS entropy
+        RNG::csprng secure;  // seeded from OS entropy
         std::cout << "Secure uint64: " << secure() << "\n";
     
         // Unbiased random int in [1, 6]
         std::cout << "Dice roll: " << secure.unbiased(1u, 6u) << "\n";
     
         // 2. Fast non-cryptographic randomness (e.g., simulations, games)
-        rng::fast_RNG fast(12345ULL);
+        RNG::fast_RNG fast(12345ULL);
         std::cout << "Fast uint64: " << fast() << "\n";
     
         // 3. Fill a buffer with secure random bytes
         std::array<std::byte, 32> key;
-        rng::get_random_bytes(key);
+        RNG::get_random_bytes(key);
     
         // 4. Use as a drop-in for std::random_device
-        rng::random_device rd;
+        RNG::random_device rd;
         std::cout << "random_device compatible: " << rd() << "\n";
     }
 # Classes Overview
 
-rng::random_device
+RNG::random_device
 
 Conforms to the UniformRandomBitGenerator concept.
 Returns 32-bit values (like std::random_device).
 Throws on entropy failure (rare but critical).
 
-rng::csprng
+RNG::csprng
 
 ChaCha20-based stream cipher in counter mode.
 256-bit key, 64-bit nonce, 64-bit block counter (original DJB layout).
@@ -73,7 +73,7 @@ Rejection sampling for unbiased bounded integers.
 Constant-time state comparison.
 Move-only (copying forbidden for security).
 
-rng::fast_RNG
+RNG::fast_RNG
 
 Single 64-bit state, ~11 GB/s throughput.
 Based on wyrand with slight mixing variation.
@@ -82,8 +82,8 @@ Full UniformRandomBitGenerator support including discard() and stream serializat
 
 Utilities
 
-rng::helper::get_random_bytes(std::span<std::byte> – Fill arbitrary buffers with secure entropy.
-rng::helper::Block<N> – Safe union for viewing fixed-size byte blocks as u8, u16, u32, or u64 arrays.
+RNG::helper::get_random_bytes(std::span<std::byte> – Fill arbitrary buffers with secure entropy.
+RNG::helper::Block<N> – Safe union for viewing fixed-size byte blocks as u8, u16, u32, or u64 arrays.
 
 ### Benchmarks and Statistical Testing
 
@@ -91,9 +91,9 @@ Tested on Windows 11, MSVC 2022, Intel Core i7-13700K (single thread).
 
 | Generator            | Speed (GB/s) | PractRand (2 GB) | Notes |
 |----------------------|--------------|------------------|-------|
-| `rng::random_device` | ~0.06       | No anomalies    | Limited by OS entropy rate (BCryptGenRandom). Expected behavior. |
-| `rng::csprng`        | ~0.52       | No anomalies    | Strong for software ChaCha20 (comparable implementations: 0.3–1.0 GB/s). |
-| `rng::fast_RNG`      | ~10.7       | No anomalies    | Matches wyrand (~10–12 GB/s) while passing rigorous tests. Previously tested to 64 GiB clean. |
+| `RNG::random_device` | ~0.06       | No anomalies    | Limited by OS entropy rate (BCryptGenRandom). Expected behavior. |
+| `RNG::csprng`        | ~0.52       | No anomalies    | Strong for software ChaCha20 (comparable implementations: 0.3–1.0 GB/s). |
+| `RNG::fast_RNG`      | ~10.7       | No anomalies    | Matches wyrand (~10–12 GB/s) while passing rigorous tests. Previously tested to 64 GiB clean. |
 
 See `RNG_test.h` for the tester and `RNG_test_results*` files for raw/reproduced output.
 
@@ -118,11 +118,11 @@ Example with CMake:
 # References
 Here are some high-quality external resources for background on the key algorithms and tools used in this library. These provide deeper reading on design, security, and testing.
 
-- wyrand / wyhash (basis for rng::fast_RNG)  
+- wyrand / wyhash (basis for RNG::fast_RNG)  
     Official repository by Wang Yi: https://github.com/wangyi-fudan/wyhash  
     (Includes wyrand implementation, discussions on statistical quality, and PractRand results.)  
 
-- ChaCha20 (basis for rng::csprng)  
+- ChaCha20 (basis for RNG::csprng)  
     Original paper by Daniel J. Bernstein: "ChaCha, a variant of Salsa20" (2008)  
     https://cr.yp.to/chacha/chacha-20080128.pdf  
     Note: This library uses Bernstein's original layout (64-bit nonce + 64-bit counter). For the IETF-standard variant (96-bit nonce + 32-bit counter, used in TLS/WireGuard): RFC 8439 - ChaCha20 and Poly1305 for IETF Protocols https://datatracker.ietf.org/doc/html/rfc8439
