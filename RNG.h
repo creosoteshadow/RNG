@@ -2,30 +2,31 @@
 // file RNG.h
 
 /*
-Contents:
+    RNG.h — Three high-quality random number generators + utilities
 
-        Three Random Number Generators
+    Contents:
+        1. RNG::random_device
+           Drop-in replacement for std::random_device using BCryptGenRandom on Windows
+           or getentropy()/getrandom() on POSIX. Returns 4 bytes at a time.
 
-            1. Replacement for std::random_device, uses BCryptGenRandom. Retrieves
-               4 bytes at a time, just like random_device.
-            class rng::random_device;
+        2. RNG::csprng
+           Cryptographically secure PRNG based on full-round ChaCha20.
+           Suitable for key generation, nonces, etc.
 
+        3. RNG::fast_RNG
+           Extremely fast non-cryptographic PRNG, based on wyrand.
+           Top-tier statistical quality (~10+ GB/s, PractRand clean to 64 GiB).
 
-            2. a cryptographically secure random number generator, based on ChaCha20
-            class rng::csprng;
+    Bonus:
+        wyrand_rng() — ultra-minimal global stateless version (12 lines, portable,
+        simple seeding). Ideal for embedded, games, or any fire-and-forget randomness.
 
-            3. A fast random number generator, very similar to wyrand
-            class rng::fast_RNG;
-
-        Utilities
-
-            fills a buffer with random bytes.
-            void rng::Utility::get_random_bytes(std::span<std::byte> buffer) noexcept(false);
-
-            Creates a union that allows access to data as u8, u16, u32, and u64.
-            rng::Block::Block
+    Utilities:
+        RNG::Utility::get_random_bytes(std::span<std::byte>) — fill buffer with CSPRNG bytes
+        RNG::Block<N> — safe type-punning union for byte/u32/u64 views
 */
 
+#include "umul128.h" // portable version of _umul128
 #include <algorithm> // Needed for std::min
 #include <array>
 #include <bit> // std::rotl, std::endian
@@ -41,45 +42,49 @@ Contents:
 #include <utility>      // for std::swap
 #include <vector>
 
-// Portable 128-bit multiplication helpers
-// Define once per translation unit
-#ifdef __SIZEOF_INT128__
-// GCC/Clang with native __int128 support
-using uint128_t = __int128_t;
+#include <cstdint>  // for uint64_t, etc. (use <stdint.h> in pure C)
 
-static inline constexpr uint128_t mul128(std::uint64_t a, std::uint64_t b) {
-    return static_cast<uint128_t>(a) * static_cast<uint128_t>(b);
-}
 
-static inline constexpr std::uint64_t lo128(uint128_t x) {
-    return static_cast<std::uint64_t>(x);
-}
+namespace RNG {
+    /* First, a bonus generator:
+     * Ultra-minimal wyrand variant — 64-bit, full period, top-tier quality
+     * Optional seeding.
+     * Perfect for embedded, games, simulations where reproducibility isn't needed.
+     * Quality: Passes PractRand and BigCrush
+     * Note: Not cryptographically secure.
+     * Note: Not thread-safe.
+     * 
+     * For a full-featured RNG based on this primitive, see RNG::fast_RNG.
+     * 
+     * Example usage:
+     *
+     *      RNG::compact_rng rng(12345);   // seeded (seed is optional)
+     *      uint64_t r = rng();           // get next random number
+     *
+     *      // or default-constructed:
+     *      RNG::compact_rng rng2;
+     *      uint64_t r2 = rng2();
+     */
+    class compact_rng {
+        uint64_t state = 0x2d358dccaa6c78a5ull;
+    public:
+        compact_rng(const uint64_t seed = 0) : state(seed) {}
 
-static inline constexpr std::uint64_t hi128(uint128_t x) {
-    return static_cast<std::uint64_t>(x >> 64);
-}
-
-#elif defined(_MSC_VER)
-// MSVC: use intrinsic
-#include <intrin.h>     // MSVC intrinsic, only included when needed
-struct uint128_t {
-    std::uint64_t lo;
-    std::uint64_t hi;
-    constexpr uint128_t(std::uint64_t l = 0, std::uint64_t h = 0) : lo(l), hi(h) {}
-};
-
-static inline uint128_t mul128(std::uint64_t a, std::uint64_t b) {
-    std::uint64_t hi;
-    std::uint64_t lo = _umul128(a, b, &hi);
-    return { lo, hi };
-}
-
-static inline constexpr std::uint64_t lo128(uint128_t x) { return x.lo; }
-static inline constexpr std::uint64_t hi128(uint128_t x) { return x.hi; }
-
+        inline uint64_t operator()(uint64_t seed = 0) {
+            state += 0x2d358dccaa6c78a5ull;
+#if defined(_MSC_VER)
+            uint64_t hi, lo = _umul128(state, state ^ 0x8bb84b93962eacc9ull, &hi);
+            return state ^ 0x8bb84b93962eacc9ull ^ lo ^ hi;
+#elif defined(__SIZEOF_INT128__)
+            __uint128_t tmp = (__uint128_t)state * (state ^ 0x8bb84b93962eacc9ull);
+            return state ^ 0x8bb84b93962eacc9ull ^ (uint64_t)tmp ^ (uint64_t)(tmp >> 64);
 #else
-#error "Compiler/platform does not support 128-bit multiplication required for unbiased()"
+            // We want an error here - no fast multiply available
+#error "No 128-bit multiplication available for compact_rng()"
 #endif
+        }
+    };
+}
 
 // This should never happen, but for defensive purposes:
 static_assert(sizeof(std::byte) == 1, "std::byte must be 8 bits");
@@ -88,7 +93,7 @@ static_assert(sizeof(std::byte) == 1, "std::byte must be 8 bits");
 static_assert(std::endian::native == std::endian::little,
     "This ChaCha20 implementation assumes little-endian byte order");
 
-namespace rng {
+namespace RNG {
     // alias types for fixed sized unsigned integers    
     using u8 = std::uint8_t;
     using u16 = std::uint16_t;
@@ -118,7 +123,7 @@ namespace rng {
         }
 
         //==============================================================================================
-        // rng::helper::Block  --  union for safe type punning
+        // RNG::helper::Block  --  union for safe type punning
         // Block union for safe type punning.
         //==============================================================================================
         template <std::size_t NBytes> // NBytes is frequently 64, but that is not required
@@ -193,14 +198,14 @@ namespace rng {
             // Users may also directly access the raw views for performance-critical code:
             //   bytes[]  – std::byte view (preferred for generic code)
             //   u8[]     – uint8_t view
-            //   u16[]    – uint16_t view (rare)
-            //   u32[]    – uint32_t view (common in ChaCha, SHA-2, etc.)
-            //   u64[]    – uint64_t view (common in KECCAK, BLAKE, etc.)
+            //   _u16[]    – uint16_t view (rare)
+            //   _u32[]    – uint32_t view (common in ChaCha, SHA-2, etc.)
+            //   _u64[]    – uint64_t view (common in KECCAK, BLAKE, etc.)
 
             // clear() securely zero-out the allocated memory
             inline void clear() noexcept
             {
-                // wipe 64-bit chunks
+                // wipe 64-bit_count chunks
                 volatile uint64_t* v64 = reinterpret_cast<volatile uint64_t*>(u64);
                 for (std::size_t i = 0; i < size_in_u64(); ++i) {
                     v64[i] = 0;
@@ -287,7 +292,7 @@ namespace rng {
 
         // A couple common sizes of Blocks
 
-        using Block64 = Block<64>; // a union that allows us to view 64 bytes as std::bytes, u8, u32, or u64
+        using Block64 = Block<64>; // a union that allows us to view 64 bytes as std::bytes, u8, _u32, or _u64
         using Block32 = Block<32>;
 
         //==============================================================================================
@@ -303,12 +308,12 @@ namespace rng {
             };
 
             /*
-            * In the st::ChaCha namespace we typically use a 256 bit key, 64 bit block_counter, and
-            * 64 bit nonce. This is consistent with the original ChaCha20-Bernstein layout, but there
-            * are many modern implementations that use a 32 bit block_counter and a 96 bit nonce.
+            * In the st::ChaCha namespace we typically use a 256 bit_count key, 64 bit_count block_counter, and
+            * 64 bit_count nonce. This is consistent with the original ChaCha20-Bernstein layout, but there
+            * are many modern implementations that use a 32 bit_count block_counter and a 96 bit_count nonce.
             *
-            * ChaCha20-Bernstein (original): 64-bit nonce, 64-bit block_counter
-            * NOT RFC 8439 compliant (which uses 96-bit nonce + 32-bit block_counter)
+            * ChaCha20-Bernstein (original): 64-bit_count nonce, 64-bit_count block_counter
+            * NOT RFC 8439 compliant (which uses 96-bit_count nonce + 32-bit_count block_counter)
             *
             * Warning: This is NOT the RFC 8439 layout used in TLS/WireGuard
             * Do not mix with standard libraries unless you know what you're doing.
@@ -319,12 +324,12 @@ namespace rng {
 
             // Types used throughout st::ChaCha
 
-            using KEY = std::array<u32, 8>; // 256 bit key
-            using NONCE = std::array<u32, 2>; // 64 bit nonce
-            using BLOCK_COUNTER = u64; // 64 bit block block_counter
+            using KEY = std::array<u32, 8>; // 256 bit_count key
+            using NONCE = std::array<u32, 2>; // 64 bit_count nonce
+            using BLOCK_COUNTER = u64; // 64 bit_count block block_counter
 
-            using NONCE96 = std::array<u32, 3>; // 96 bit nonce
-            using BLOCK_COUNTER_32 = u32; // 32 bit block block_counter
+            using NONCE96 = std::array<u32, 3>; // 96 bit_count nonce
+            using BLOCK_COUNTER_32 = u32; // 32 bit_count block block_counter
 
             // simple validation of sizes
 
@@ -343,7 +348,7 @@ namespace rng {
              * @internal
              * @brief xxHash final mixing function
              *
-             * The final mix ensures that all input bits have a chance to impact any bit in
+             * The final mix ensures that all input bits have a chance to impact any bit_count in
              * the output digest, resulting in an unbiased distribution.
              *
              * @param hash The hash to avalanche.
@@ -416,7 +421,7 @@ namespace rng {
                 permute_block(out.u32, in.u32);
             }
 
-            // Builds original Bernstein ChaCha20 state (64-bit nonce + 64-bit block_counter)
+            // Builds original Bernstein ChaCha20 state (64-bit_count nonce + 64-bit_count block_counter)
             // *** WARNING: NOT compatible with RFC 8439 / TLS / WireGuard ***
             inline Block64 build_state(
                 const KEY& key,
@@ -468,15 +473,15 @@ namespace rng {
                 return state;
             }
 
-        }// namespace rng::helper::ChaCha
-    } //namespace rng::helper
+        }// namespace RNG::helper::ChaCha
+    } //namespace RNG::helper
 
     //==============================================================================================
-    // rng::random_device -- alternative to std::random_device
+    // RNG::random_device -- alternative to std::random_device
     //==============================================================================================
 
     /*
-        rng::random_device
+        RNG::random_device
 
         A non-deterministic random number generator that produces uniformly distributed
         unsigned integers using cryptographically secure entropy from the operating system.
@@ -490,7 +495,7 @@ namespace rng {
         if system entropy is temporarily exhausted.
 
         Defined in header "RNG.h"
-            namespace rng {
+            namespace RNG {
                 class random_device;
             }
 
@@ -520,15 +525,15 @@ namespace rng {
 
             Generation
                 result_type operator()()
-                    Returns a uniformly distributed random 32-bit value.
+                    Returns a uniformly distributed random 32-bit_count value.
                     May throw if entropy collection fails.
 
                 uint32_t draw32()
                     Equivalent to operator(). Provided for clarity.
 
                 uint64_t draw64()
-                    Returns a uniformly distributed random 64-bit value by combining
-                    two independent 32-bit draws.
+                    Returns a uniformly distributed random 64-bit_count value by combining
+                    two independent 32-bit_count draws.
 
                  uint64_t unbiased(uint64_t lo, uint64_t hi)
                     Returns a uniformly distributed integer in the closed interval [lo, hi]
@@ -537,7 +542,7 @@ namespace rng {
 
                  void fill(std::span<std::byte> data)
                     Fills the specified byte span with cryptographically secure random bytes.
-                    Optimized for large buffers by requesting 64-bit chunks when possible.
+                    Optimized for large buffers by requesting 64-bit_count chunks when possible.
 
                  template<class T, size_t N>
                  void fill(std::array<T, N>& arr)
@@ -569,7 +574,7 @@ namespace rng {
 
             int main()
             {
-                rng::random_device rd; // not std::
+                RNG::random_device rd; // not std::
                 std::map<int, int> hist;
                 std::uniform_int_distribution<int> dist(0, 9);
 
@@ -602,11 +607,11 @@ namespace rng {
         // Explicitly allow construction with a "token" string (ignored, for compatibility)
         explicit random_device(const std::string&) {}
 
-        // The core: return secure random 32-bit value
+        // The core: return secure random 32-bit_count value
         uint32_t operator()() noexcept(false)
         {
             uint32_t result;
-            rng::helper::fill_with_platform_entropy(reinterpret_cast<unsigned char*>(&result), sizeof(result));
+            RNG::helper::fill_with_platform_entropy(reinterpret_cast<unsigned char*>(&result), sizeof(result));
             return result;
         }
 
@@ -623,14 +628,14 @@ namespace rng {
         inline uint64_t draw64() { return (uint64_t((*this)()) << 32) | uint64_t((*this)()); }
 
         // Returns a uniformly distributed integer in [lo, hi] using Lemire's unbiased method.
-        // Handles all edge cases (including full 64-bit range) without statistical bias.
+        // Handles all edge cases (including full 64-bit_count range) without statistical bias.
         inline std::uint64_t unbiased(std::uint64_t lo, std::uint64_t hi)
         {
             if (lo > hi) std::swap(lo, hi);
             if (lo == hi) return lo;
 
             const std::uint64_t range = hi - lo + 1;
-            if (range == 0) return draw64();  // full 64-bit range
+            if (range == 0) return draw64();  // full 64-bit_count range
 
             std::uint64_t x = draw64();
             uint128_t m = mul128(x, range);
@@ -674,31 +679,31 @@ namespace rng {
     };
 
     //==============================================================================================
-    // rng::csprng, ChaCha20 secure generator
+    // RNG::csprng, ChaCha20 secure generator
     //==============================================================================================
 
     /*
-    rng::csprng
+    RNG::csprng
 
     A cryptographically secure pseudorandom number generator (CSPRNG) based on ChaCha20
-    (Bernstein's original design with 20 rounds, 256-bit key, 64-bit nonce, and 64-bit block counter).
+    (Bernstein's original design with 20 rounds, 256-bit_count key, 64-bit_count nonce, and 64-bit_count block counter).
 
     This implementation is NOT compatible with RFC 8439 (TLS/WireGuard) layout, which uses a
-    96-bit nonce and 32-bit counter. Do not interchange keys/nonces with standard libraries
+    96-bit_count nonce and 32-bit_count counter. Do not interchange keys/nonces with standard libraries
     unless you deliberately target the same layout.
 
     The generator provides:
-      • Full 256-bit security strength
+      • Full 256-bit_count security strength
       • Excellent performance (~3–5 GB/s on modern CPUs)
       • Backtracking resistance and forward secrecy
       • Safe reseeding, jumping, and parallel stream generation
 
     It conforms to the UniformRandomBitGenerator concept and provides additional convenience
-    functions identical to those in rng::random_device.
+    functions identical to those in RNG::random_device.
 
     Defined in header "RNG.h"
 
-    namespace rng {
+    namespace RNG {
         class csprng;
     }
 
@@ -714,7 +719,7 @@ namespace rng {
         (1) explicit csprng(const helper::ChaCha::KEY& k,
                             const helper::ChaCha::NONCE& n,
                             uint64_t initial_counter = 0)
-            Constructs from explicit 256-bit key and 64-bit nonce.
+            Constructs from explicit 256-bit_count key and 64-bit_count nonce.
             Recommended for full cryptographic control.
 
         (2) explicit csprng(const helper::Block64& seed_block)
@@ -726,7 +731,7 @@ namespace rng {
             (standard key-derivation technique similar to HKDF-Expand or BLAKE3 keyed mode).
 
         (4) csprng()
-            Default constructor. Seeds from the platform CSPRNG (rng::random_device)
+            Default constructor. Seeds from the platform CSPRNG (RNG::random_device)
             using 64 bytes of entropy. Key, nonce, and initial counter are derived securely.
 
     Note: Copy construction and copy assignment are deleted (stream duplication is catastrophic
@@ -734,7 +739,7 @@ namespace rng {
 
     Generation
         result_type operator()()
-            Returns the next cryptographically secure 64-bit value.
+            Returns the next cryptographically secure 64-bit_count value.
 
         uint32_t draw32()
             Returns the low 32 bits of the next value (standard practice).
@@ -757,7 +762,7 @@ namespace rng {
             Useful after fork() or for periodic reseeding.
 
         void discard(std::uint64_t n)
-            Advances the stream by n 64-bit values without generating them.
+            Advances the stream by n 64-bit_count values without generating them.
             O(1) amortized.
 
         void jump()
@@ -792,7 +797,7 @@ namespace rng {
 
         int main()
         {
-            rng::csprng gen;                                   // seeded from OS entropy
+            RNG::csprng gen;                                   // seeded from OS entropy
             std::vector<std::byte> buffer(1024);
             gen.fill(buffer);                                  // fast cryptographic keystream
 
@@ -803,11 +808,11 @@ namespace rng {
         }
     */
     class csprng {
-        rng::helper::ChaCha::KEY key{};          // 256-bit key
-        rng::helper::ChaCha::NONCE nonce{ 0,0 }; // 64-bit nonce 
-        u64 block_counter = 0;                // 64-bit block block_counter
-        helper::Block64 buffer{};              // Block64 is a 64 byte union, accessible through u8/u32/u64 interfaces
-        size_t word_index = 8;          // 8 × u64 per ChaCha block → start exhausted
+        RNG::helper::ChaCha::KEY key{};          // 256-bit_count key
+        RNG::helper::ChaCha::NONCE nonce{ 0,0 }; // 64-bit_count nonce 
+        u64 block_counter = 0;                // 64-bit_count block block_counter
+        helper::Block64 buffer{};              // Block64 is a 64 byte union, accessible through u8/_u32/_u64 interfaces
+        size_t word_index = 8;          // 8 × _u64 per ChaCha block → start exhausted
 
     public:
         /// Unsigned integer type produced by operator()
@@ -826,14 +831,14 @@ namespace rng {
         /// Largest value that operator() can return
         static constexpr result_type max() { return UINT64_MAX; }
 
-        /// @param k   256-bit (32-byte) secret key
-        /// @param n   64-bit nonce/IV (two 32-bit words)
+        /// @param k   256-bit_count (32-byte) secret key
+        /// @param n   64-bit_count nonce/IV (two 32-bit_count words)
         /// @param initial_counter  Starting block block_counter (default 0)
         ///
         /// Recommended construction for cryptographic use.
         csprng(
-            const rng::helper::ChaCha::KEY& k,
-            rng::helper::ChaCha::NONCE& n,        // 64-bit nonce
+            const RNG::helper::ChaCha::KEY& k,
+            const RNG::helper::ChaCha::NONCE& n,        // 64-bit_count nonce
             u64 initial_counter = 0)
             : key(k), nonce(n), block_counter(initial_counter)
         {
@@ -852,11 +857,11 @@ namespace rng {
             helper::Block64 temp(block);
 
             // Use ChaCha to scramble the block
-            rng::helper::ChaCha::permute_block(temp, temp);
+            RNG::helper::ChaCha::permute_block(temp, temp);
 
             // copy from the block to the key and nonce
-            memcpy(key.data(), temp.u32, 32); // 8 * u32
-            memcpy(nonce.data(), temp.u32 + 8, 8); // 2 * u32
+            memcpy(key.data(), temp.u32, 32); // 8 * _u32
+            memcpy(nonce.data(), temp.u32 + 8, 8); // 2 * _u32
 
             // we don't need temp any longer. Clear it.
             temp.clear();
@@ -869,7 +874,7 @@ namespace rng {
         /// @param block  Raw 32-byte seed material
         ///
         /// Equivalent to libsodium's crypto_generichash-based key derivation or BLAKE3 keyed mode:
-        /// the 32-byte seed is expanded to a full 256-bit key + 64-bit nonce via one ChaCha20 block.
+        /// the 32-byte seed is expanded to a full 256-bit_count key + 64-bit_count nonce via one ChaCha20 block.
         /// Provides domain separation and input destruction.
         explicit csprng(const helper::Block32& block /* 32 byte seed block */)
             : block_counter(0)
@@ -880,7 +885,7 @@ namespace rng {
             // zero pad unused bytes. Note: these should already be zeros, from the Block64 construction. But, no harm done.
             memset(temp.bytes + 32, 0, 32); 
             
-            // Expand 32-byte seed → fresh 256-bit key + 64-bit nonce using one ChaCha20 block
+            // Expand 32-byte seed → fresh 256-bit_count key + 64-bit_count nonce using one ChaCha20 block
             // This is a standard, secure key-derivation technique (similar to HKDF-Expand,
             // BLAKE3 keyed mode, and libsodium's common practice). It provides:
             // • Domain separation (raw seed never used directly)
@@ -888,11 +893,11 @@ namespace rng {
             // • Strong one-wayness and backtracking resistance
             // It is NOT an entropy extractor if the seed is low-entropy — the caller must
             // supply high-entropy input (e.g. from getrandom(), RDSEED, or a KDF).
-            rng::helper::ChaCha::permute_block(temp, temp);
+            RNG::helper::ChaCha::permute_block(temp, temp);
 
             // copy from temp to key and nonce
-            memcpy(key.data(), temp.u32, 32); // 8 * u32
-            memcpy(nonce.data(), temp.u32 + 8, 8); // 2 * u32
+            memcpy(key.data(), temp.u32, 32); // 8 * _u32
+            memcpy(nonce.data(), temp.u32 + 8, 8); // 2 * _u32
 
             // we don't need temp any longer. Clear it.
             temp.clear();
@@ -909,12 +914,12 @@ namespace rng {
         /// - POSIX   → getrandom(2) with GRND_NONBLOCK implicitly preferred
         ///
         /// The entropy is split as follows:
-        /// - bytes 0–31  → 256-bit ChaCha20 key
-        /// - bytes 32–39 → 64-bit nonce
+        /// - bytes 0–31  → 256-bit_count ChaCha20 key
+        /// - bytes 32–39 → 64-bit_count nonce
         /// - bytes 40–47 → initial block block_counter (randomized for forward secrecy)
         /// - bytes 48–63 → discarded (domain separation / future expansion)
         ///
-        /// This construction yields full 256-bit security, protects against accidental key/nonce
+        /// This construction yields full 256-bit_count security, protects against accidental key/nonce
         /// reuse, and ensures distinct output streams even if the system RNG repeats a value.
         ///
         /// get_random_bytes() throws std::runtime_error if entropy collection fails.
@@ -943,8 +948,8 @@ namespace rng {
             clear(&buffer, sizeof(buffer));
         }
 
-        /// @brief Generates the next 64-bit value in the keystream
-        /// @return A cryptographically secure 64-bit unsigned integer
+        /// @brief Generates the next 64-bit_count value in the keystream
+        /// @return A cryptographically secure 64-bit_count unsigned integer
         result_type operator()() {
             if (word_index >= 8) {
                 refill_buffer();
@@ -962,14 +967,14 @@ namespace rng {
         }
 
         // Returns a uniformly distributed integer in [lo, hi] using Lemire's unbiased method.
-        // Handles all edge cases (including full 64-bit range) without statistical bias.
+        // Handles all edge cases (including full 64-bit_count range) without statistical bias.
         inline std::uint64_t unbiased(std::uint64_t lo, std::uint64_t hi)
         {
             if (lo > hi) std::swap(lo, hi);
             if (lo == hi) return lo;
 
             const std::uint64_t range = hi - lo + 1;
-            if (range == 0) return draw64();  // full 64-bit range
+            if (range == 0) return draw64();  // full 64-bit_count range
 
             std::uint64_t x = draw64();
             uint128_t m = mul128(x, range);
@@ -1014,8 +1019,8 @@ namespace rng {
         // bool operator==(const random_device&) const noexcept { return true; }
 
         /// @brief Reseeds the generator with a new key/nonce pair
-        /// @param k  New 256-bit key
-        /// @param n  New 64-bit nonce
+        /// @param k  New 256-bit_count key
+        /// @param n  New 64-bit_count nonce
         ///
         /// Useful after fork() in multi-process environments or for periodic reseeding.
         void reseed(const helper::ChaCha::KEY& k, const helper::ChaCha::NONCE& n) {
@@ -1025,8 +1030,8 @@ namespace rng {
             refill_buffer();
         }
 
-        /// @brief Discards the next @a n 64-bit values from the output stream
-        /// @param n  Number of 64-bit values to skip (may be zero)
+        /// @brief Discards the next @a n 64-bit_count values from the output stream
+        /// @param n  Number of 64-bit_count values to skip (may be zero)
         ///
         /// This function advances the internal state as if @a n values had been generated,
         /// but without actually computing the discarded values. It is provided for compatibility
@@ -1070,7 +1075,7 @@ namespace rng {
         ///
         /// Use to generate up to 2^32 non-overlapping subsequences for parallel computations
         /// (each subsequence has length 2^32).
-        /// Preserves full 64-bit nonce security.
+        /// Preserves full 64-bit_count nonce security.
         void jump() {
             discard(1ULL << 32);
         }
@@ -1080,7 +1085,7 @@ namespace rng {
         ///
         /// Use to generate up to 2^16 non-overlapping subsequences for parallel computations
         /// (each subsequence has length 2^48).
-        /// Preserves full 64-bit nonce security.
+        /// Preserves full 64-bit_count nonce security.
         void long_jump() {
             discard(1ULL << 48);
         }
@@ -1088,7 +1093,7 @@ namespace rng {
         /// @brief Compares two csprng objects for equality of internal state
         /// @return true if and only if both generators produce identical future output
         ///
-        /// The 256-bit key is compared in constant time to prevent timing attacks.
+        /// The 256-bit_count key is compared in constant time to prevent timing attacks.
         /// The output buffer is intentionally not compared: when key, nonce,
         /// block_counter, and word_index are identical, the next generated value is
         /// guaranteed to be identical regardless of current buffer contents.
@@ -1125,7 +1130,7 @@ namespace rng {
         // Serialization — intentionally private and undocumented in public API
         // ====================================================================
         //
-        // Exposing the full internal state (especially the 256-bit key) would
+        // Exposing the full internal state (especially the 256-bit_count key) would
         // completely break forward/backward secrecy and allow an attacker to
         // predict all future and past outputs.
         //
@@ -1144,7 +1149,7 @@ namespace rng {
         /// @name Serialization
         /// @brief Serializes the complete internal state of the generator
         /// @param os  Output stream
-        /// @param rng The generator to serialize
+        /// @param RNG The generator to serialize
         /// @return    Reference to the output stream
         ///
         /// The format is binary and versioned:
@@ -1181,7 +1186,7 @@ namespace rng {
 
         /// @brief Deserializes and restores the complete internal state
         /// @param is  Input stream
-        /// @param rng The generator to restore into
+        /// @param RNG The generator to restore into
         /// @return    Reference to the input stream
         ///
         /// Throws std::runtime_error on version mismatch, invalid magic, or I/O error.
@@ -1264,18 +1269,18 @@ namespace rng {
     }; // class csprng
 
     //==============================================================================================
-    // rng::fast_RNG, Fast (11 GB/s) non-cryptographic generator
+    // RNG::fast_RNG, Fast (11 GB/s) non-cryptographic generator
     //==============================================================================================
 
     /*
-    rng::fast_RNG
+    RNG::fast_RNG
 
     A fast, high-quality non-cryptographic pseudorandom number generator inspired by wyrand.
 
     Characteristics:
       • Extremely high throughput: ~11 GB/s on modern x86-64 CPUs
       • Excellent statistical quality: passes PractRand to 64 GB with no anomalies
-      • 64-bit state, full 64-bit output
+      • 64-bit_count state, full 64-bit_count output
       • Simple, predictable, and portable
 
     Suitable for simulations, games, Monte-Carlo methods, procedural generation,
@@ -1286,7 +1291,7 @@ namespace rng {
 
     Defined in header "RNG.h"
 
-    namespace rng {
+    namespace RNG {
         class fast_RNG;
     }
 
@@ -1295,24 +1300,24 @@ namespace rng {
 
     Construction and seeding
         fast_RNG()
-            Default constructor. Seeds from rng::random_device (cryptographic entropy).
+            Default constructor. Seeds from RNG::random_device (cryptographic entropy).
 
         explicit fast_RNG(uint64_t seed)
-            Seeds from a single 64-bit integer.
+            Seeds from a single 64-bit_count integer.
 
         template<class SeedSeq> explicit fast_RNG(SeedSeq& seq)
         void seed(SeedSeq& seq)
             Standard seed-sequence interface.
 
         void seed()
-            Reseeds from rng::random_device (non-deterministic).
+            Reseeds from RNG::random_device (non-deterministic).
 
         void seed(result_type s)
-            Seeds from a single 64-bit value.
+            Seeds from a single 64-bit_count value.
 
     Generation
         result_type operator()()
-            Returns the next 64-bit pseudorandom value.
+            Returns the next 64-bit_count pseudorandom value.
 
         uint32_t draw32()
             Returns the high 32 bits of the next value.
@@ -1367,7 +1372,7 @@ namespace rng {
 
         int main()
         {
-            rng::fast_RNG gen;                                 // cryptographically seeded
+            RNG::fast_RNG gen;                                 // cryptographically seeded
             std::uniform_real_distribution<double> dist(0.0, 1.0);
 
             for (int i = 0; i < 10; ++i)
@@ -1392,47 +1397,47 @@ namespace rng {
             RNG = RNG_stdin64, seed = unknown
             test set = expanded, folding = extra
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 64 megabytes (2^26 bytes), time= 2.8 seconds
               no anomalies in 1008 test result(s)
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 128 megabytes (2^27 bytes), time= 7.6 seconds
               no anomalies in 1081 test result(s)
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 256 megabytes (2^28 bytes), time= 14.5 seconds
               no anomalies in 1151 test result(s)
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 512 megabytes (2^29 bytes), time= 25.3 seconds
               no anomalies in 1220 test result(s)
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 1 gigabyte (2^30 bytes), time= 44.8 seconds
               no anomalies in 1293 test result(s)
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 2 gigabytes (2^31 bytes), time= 80.5 seconds
               no anomalies in 1368 test result(s)
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 4 gigabytes (2^32 bytes), time= 151 seconds
               no anomalies in 1448 test result(s)
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 8 gigabytes (2^33 bytes), time= 292 seconds
               no anomalies in 1543 test result(s)
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 16 gigabytes (2^34 bytes), time= 566 seconds
               no anomalies in 1637 test result(s)
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 32 gigabytes (2^35 bytes), time= 1090 seconds
               no anomalies in 1714 test result(s)
 
-            rng=RNG_stdin64, seed=unknown
+            RNG=RNG_stdin64, seed=unknown
             length= 64 gigabytes (2^36 bytes), time= 33077 seconds
               no anomalies in 1807 test result(s)
 
@@ -1449,7 +1454,7 @@ namespace rng {
 
         // Default - seed from system entropy
         fast_RNG() {
-            rng::random_device rd;
+            RNG::random_device rd;
             state = rd.draw64();
         }
 
@@ -1531,14 +1536,14 @@ namespace rng {
         }
 
         // Returns a uniformly distributed integer in [lo, hi] using Lemire's unbiased method.
-        // Handles all edge cases (including full 64-bit range) without statistical bias.
+        // Handles all edge cases (including full 64-bit_count range) without statistical bias.
         inline std::uint64_t unbiased(std::uint64_t lo, std::uint64_t hi)
         {
             if (lo > hi) std::swap(lo, hi);
             if (lo == hi) return lo;
 
             const std::uint64_t range = hi - lo + 1;
-            if (range == 0) return draw64();  // full 64-bit range
+            if (range == 0) return draw64();  // full 64-bit_count range
 
             std::uint64_t x = draw64();
             uint128_t m = mul128(x, range);
@@ -1636,4 +1641,5 @@ namespace rng {
         fill(std::as_bytes(std::span(vec)), gen);
     }
 
-}// namespace rng
+}// namespace RNG
+
