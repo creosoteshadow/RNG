@@ -18,7 +18,7 @@
            Top-tier statistical quality (~10+ GB/s, PractRand clean to 64 GiB).
 
     Bonus:
-        wyrand_rng() — ultra-minimal version (12 lines, portable,
+        compact_rng() — ultra-minimal version (12 lines, portable,
         simple seeding). Ideal for embedded, games, or any fire-and-forget randomness.
 
     Utilities:
