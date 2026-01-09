@@ -1,5 +1,17 @@
-# RNG
-Collection of random number generators, each in its own header.
+# RNG Collection
+
+A set of high-quality, header-only C++ pseudorandom number generators.
+
+**IMPORTANT DISCLAIMER**
+
+**All generators in this repository are NON-CRYPTGRAPHIC PRNGs.**
+
+They are designed for statistical quality, speed, and convenience in simulations, games, Monte-Carlo methods, procedural generation, and other non-security applications.
+
+**They are NOT suitable for any cryptographic purpose** (key generation, nonces, gambling, security tokens, etc.).  
+They do **not** provide forward/backward secrecy or resistance to state compromise/observation.
+
+For cryptographic needs, use established secure primitives such as ChaCha20, AES-CTR, or platform APIs (`std::random_device`, `/dev/urandom`, CryptGenRandom, etc.).
 
 ### RNG::random_device
     #include "RNG_random_device.h"  
