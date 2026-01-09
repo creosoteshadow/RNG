@@ -16,8 +16,6 @@
 
 #include "RNG_wyrand.h"         // Lightweight wyrand — ~5.15 GB/s
 
-#include "RNG_csprng.h"         // ChaCha20-based cryptographic PRNG — ~0.56 GB/s
-
 #include "RNG_fast.h"           // High-performance wyrand variant
                                 //   Single-call: ~5.35 GB/s
                                 //   Bulk mode:    ~8.77 GB/s
