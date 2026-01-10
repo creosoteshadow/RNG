@@ -79,6 +79,9 @@ A set of high-quality, header-only C++ pseudorandom number generators.
         - **Quality**: PractRand clean through at least 64 GB (more extensive testing ongoing)  
         - **Best for**: Applications that demand the longest possible period, excellent statistical behavior, and easy parallel 
           stream splitting  
+
+        **Note on period**: Although only 512 bits are output per step, the underlying 1024-bit counter with a coprime 
+        increment guarantees a full 2¹⁰²⁴ cycle — one of the longest periods available in any non-cryptographic PRNG.
         
         When to choose Nasam1024  
                 → You want a "set it and forget it" high-confidence generator with period far beyond any conceivable practical need  
