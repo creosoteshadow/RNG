@@ -13,6 +13,33 @@ They do **not** provide forward/backward secrecy or resistance to state compromi
 
 For cryptographic needs, use established secure primitives such as ChaCha20, AES-CTR, or platform APIs (`std::random_device`, `/dev/urandom`, CryptGenRandom, etc.).
 
+# Example Usage
+        #include "RNG.h"
+        
+        int main() {
+        	RNG::SplitMix64 sm(12345ull);
+        	RNG::random_device rd;
+        	RNG::wyrand wy(12345ull);
+        	RNG::fast fa(12345ull);
+        	RNG::Nasam1024 na(12345ull);
+        
+        	std::cout << "sm() = " << sm() << "\n";
+        	std::cout << "rd() = " << rd() << "\n";
+        	std::cout << "wy() = " << wy() << "\n";
+        	std::cout << "fa() = " << fa() << "\n";
+        	std::cout << "na() = " << na() << "\n";
+        }
+        
+        /*
+        Output Example. All outputs are deterministic except for rd.
+        
+        sm() = 2454886589211414944
+        rd() = 2725604342 // varies from run to run, uses platform entropy
+        wy() = 11217614207554058483
+        fa() = 7388524142211027955
+        na() = 5118035197337003306
+        */
+        
 ### RNG::random_device
     #include "RNG_random_device.h"  
 
