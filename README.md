@@ -46,6 +46,8 @@ A set of high-quality, header-only C++ pseudorandom number generators.
 
 ### RNG::random_device
         #include "RNG_random_device.h"  
+
+        Drop-in replacement for std::random_device. Guaranteed non-deterministic results.
         
         Platform entropy source (non-deterministic) — ~0.06 GB/s (OS-limited)
         
@@ -71,7 +73,7 @@ A set of high-quality, header-only C++ pseudorandom number generators.
 ### RNG::Nasam1024
         **High-quality, buffered, counter-based generator with enormous period**  
         - **Internal state**: 1024-bit additive counter  
-        - **Theoretical period**: 2¹⁰²⁴  
+        - **Theoretical period**: 2^1024
         - **Output**: 512 bits per step (8 × 64-bit values from upper half), each strongly mixed with NASAM  
         - **Speed**: ~1.6–2.0 GB/s on modern x86-64  
         - **Quality**: PractRand clean through at least 64 GB (more extensive testing ongoing)  
@@ -84,7 +86,7 @@ A set of high-quality, header-only C++ pseudorandom number generators.
 
 # Recommendation
     
-General purpose: use RNG::Nasam512. It is fast enough (unless you REALLY need more than 100 million random draws per second), 
+General purpose: use RNG::Nasam1024. It is fast enough (unless you REALLY need more than 100 million random draws per second), 
 has excellent quality (passes 64 GB Practrand), and is versatile. It has an internal state of 1024 bits, operates in "counter 
 mode", uses a variant of the very strong NASAM mixer, and has very flexible jump operations.
 
