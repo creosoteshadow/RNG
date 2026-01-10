@@ -4,14 +4,16 @@ A set of high-quality, header-only C++ pseudorandom number generators.
 
 **IMPORTANT DISCLAIMER**
 
-**All generators in this repository are NON-CRYPTGRAPHIC PRNGs.**
-
-They are designed for statistical quality, speed, and convenience in simulations, games, Monte-Carlo methods, procedural generation, and other non-security applications.
-
-**They are NOT suitable for any cryptographic purpose** (key generation, nonces, gambling, security tokens, etc.).  
-They do **not** provide forward/backward secrecy or resistance to state compromise/observation.
-
-For cryptographic needs, use established secure primitives such as ChaCha20, AES-CTR, or platform APIs (`std::random_device`, `/dev/urandom`, CryptGenRandom, etc.).
+        All generators in this repository are NON-CRYPTGRAPHIC PRNGs.
+        
+        They are designed for statistical quality, speed, and convenience in simulations, games, Monte-Carlo methods, 
+        procedural generation, and other non-security applications.
+        
+        They are NOT suitable for any cryptographic purpose (key generation, nonces, gambling, security tokens, etc.).  
+        They do NOT provide forward/backward secrecy or resistance to state compromise/observation.
+        
+        For cryptographic needs, use established secure primitives such as ChaCha20, AES-CTR, or platform APIs 
+        (`std::random_device`, `/dev/urandom`, CryptGenRandom, etc.).
 
 # Example Usage
         #include "RNG.h"
@@ -40,44 +42,51 @@ For cryptographic needs, use established secure primitives such as ChaCha20, AES
         na() = 5118035197337003306
         */
         
-### RNG::random_device
-    #include "RNG_random_device.h"  
 
-    Platform entropy source (non-deterministic) — ~0.06 GB/s (OS-limited)
-    
-    Uses function RNG_platform::get_entropy which is contained in file platform_entropy.cpp.
+
+### RNG::random_device
+        #include "RNG_random_device.h"  
+        
+        Platform entropy source (non-deterministic) — ~0.06 GB/s (OS-limited)
+        
+        Uses function RNG_platform::get_entropy which is contained in file platform_entropy.cpp.
 
 ### RNG::SplitMix64
-    #include "RNG_SplitMix64.h"     
-    
-    This is the classic fast seeder. > 5 GB/s
+        #include "RNG_SplitMix64.h"     
+        
+        This is the classic fast seeder. > 5 GB/s
     
 ### RNG::wyrand
-    #include "RNG_wyrand.h"
-    
-    Lightweight wyrand class. ~5 GB/s.
+        #include "RNG_wyrand.h"
+        
+        Lightweight wyrand class. ~5 GB/s.
     
 ### RNG::fast
-    #include "RNG_fast.h"
-    
-    High-performance wyrand variant
-        Single-call: ~5.35 GB/s
-        Bulk mode:    ~8.77 GB/s
+        #include "RNG_fast.h"
+        
+        High-performance wyrand variant
+                Single-call: ~5.35 GB/s
+                Bulk mode:    ~8.77 GB/s
 
-### RNG::Nasam512
-    #include "RNG_Nasam512.h"
-    
-    1024 bit state, 2^512 length period.
-    
-    Uses modified NASAM mixing.
-    
-    > 1 GB/s
-    
-    Passes PractRand at 64 GB.
+### RNG::Nasam1024
+        **High-quality, buffered, counter-based generator with enormous period**  
+        - **Internal state**: 1024-bit additive counter  
+        - **Theoretical period**: 2¹⁰²⁴  
+        - **Output**: 512 bits per step (8 × 64-bit values from upper half), each strongly mixed with NASAM  
+        - **Speed**: ~1.6–2.0 GB/s on modern x86-64  
+        - **Quality**: PractRand clean through at least 64 GB (more extensive testing ongoing)  
+        - **Best for**: Applications that demand the longest possible period, excellent statistical behavior, and easy parallel 
+          stream splitting  
+        
+        When to choose Nasam1024  
+                → You want a "set it and forget it" high-confidence generator with period far beyond any conceivable practical need  
+                → You value the ability to create millions of uncorrelated streams with confidence they won't overlap
 
 # Recommendation
     
-General purpose: use RNG::Nasam512. It is fast enough (unless you REALLY need more than 100 million random draws per second), has excellent quality (passes 64 GB Practrand), and is versatile. It has an internal state of 1024 bits, operates in "counter mode", uses a variant of the very strong NASAM mixer, and has very flexible jump operations.
+General purpose: use RNG::Nasam512. It is fast enough (unless you REALLY need more than 100 million random draws per second), 
+has excellent quality (passes 64 GB Practrand), and is versatile. It has an internal state of 1024 bits, operates in "counter 
+mode", uses a variant of the very strong NASAM mixer, and has very flexible jump operations.
 
 Fastest possible: use rng::fast in Bulk mode.
 
