@@ -20,6 +20,6 @@
                                 //   Single-call: ~5.35 GB/s
                                 //   Bulk mode:    ~8.77 GB/s
 
-#include "RNG_Nasam512.h"       // 512-bit state, 2⁵¹² period, NASAM mixing
+#include "RNG_Nasam1024.h"       // 1024-bit state, 2^1024 period, NASAM mixing
                                 //   Single-call: ~1.58 GB/s
-                                //   Bulk mode:    ~1.77 GB/s
+                                //   Bulk mode:   ~1.77 GB/s
