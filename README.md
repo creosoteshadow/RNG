@@ -38,6 +38,43 @@ Weyl-Mix RNG. A cousin of wyrand - 256 bit state, uses wyrand mixing function, w
 
 LCG/Permuted RNG. The classic 64 bit RNG.
 
+User Interface
+
+	// Construct, destruct, seed
+	constexpr SplitMix64(u64 seed);
+	SplitMix64()noexcept;
+	SplitMix64(const SplitMix64& other);
+	SplitMix64(SplitMix64&& other);
+
+	// Random number generation
+	u64 operator()(); --return 64 bit random value
+	u64 draw64(); --return 64 bit random value
+	uint32_t draw32(); --return 32 bit random value
+	inline double uni(); -- Return a uniformly distributed double in the range [0.0, 1.0)
+	u64 uniform(u64 limit);	     -- Return in range [0,limit)
+	u64 uniform(u64 lo, u64 hi); -- Return in range [lo,hi]
+
+	// jump functions
+	constexpr inline SplitMix64& discard(u64 nsteps); -- discard an arbitrary number of steps
+	constexpr inline SplitMix64& jump()noexcept;	  -- jump, 2^32 steps
+	constexpr inline SplitMix64& long_jump()noexcept; --  long_jump, 2^48 steps
+
+	// seeding
+	constexpr inline SplitMix64& reseed(u64 seed)noexcept; -- reseed the generator. Resets the state.
+
+	// Multi-stream support
+
+	// Returns a vector of n independent SplitMix64 generators, each initialized with the
+	// same seed but separated by 2^48 steps using long_jump(). This allows for up to 2^16 
+	// independent streams with a 2^48 step separation, which is a safe distance for most 
+	// applications. For more extreme separation, consider using wy128 or wy256 with their 
+	// 'big_jump' methods.
+	static std::vector<SplitMix64> factory(size_t n, u64 initial_seed);
+
+	// min and max
+	static inline u64 min();
+	static inline u64 max();
+
 ## class xoshiro256plusplus 
 
 Shift-Register RNG. 2019 by David Blackman and Sebastiano Vigna - A high-quality 256 bit state NCPRNG.
